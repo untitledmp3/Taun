@@ -36,7 +36,7 @@ on enter combat summon rose dragon
 
 wardrobe swap rules  
 on equip mossy helianthus, equip hedgehog  
-on equip mantid helianthusm, equip mosquito  
+on equip mantid helianthus, equip mosquito  
 on gain collection (crop that you are farming), equip mooshroom cow  
 (u can also add on enter combat equip rosedrag in case you kill a pest that has the same collection as your crop)  
 
