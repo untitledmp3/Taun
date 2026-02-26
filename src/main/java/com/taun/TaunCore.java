@@ -53,6 +53,7 @@ public class TaunCore implements ClientModInitializer {
     
     private static boolean chatTriggersEnabled = true;
     private static boolean rodswapEnabled = false;
+    private static boolean rosedragEnabled = false;
     private static boolean wardrobeSwapEnabled = false;
     private static boolean etherwarpEnabled = false;
     private static float etherwarpYaw = -95f;   // center yaw, ±10 applied when writing triggers
@@ -164,11 +165,11 @@ public class TaunCore implements ClientModInitializer {
             mc.execute(() -> { if (mc.player != null) mc.player.networkHandler.sendChatCommand("call george"); });
             if (debugEnabled) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Sent /call george, waiting for GUI..."), false);
 
-            long guiDeadline = System.currentTimeMillis() + 8000;
+            long guiDeadline = System.currentTimeMillis() + 10000;
             while (mc.currentScreen == null && System.currentTimeMillis() < guiDeadline) Thread.sleep(100);
             if (mc.currentScreen == null) {
                 LOGGER.warn("[SlugSell] No GUI appeared after /call george — aborting");
-                if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §cNo GUI after /call george — aborting sell"), false);
+                if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §c/call george timed out — returning to farming"), false);
                 return;
             }
             Thread.sleep(300); // let slots populate
@@ -377,6 +378,7 @@ public class TaunCore implements ClientModInitializer {
     private static volatile boolean isResting = false;
     private static boolean eqSwapPending = false;
     private static boolean jacobContestActive = false;
+    private static boolean zorroEnabled = true; // toggle via /pest eqswap zorro
     private static int jacobTimerSeconds = -1;
     private static volatile boolean cropFeverActive = false;
     private static volatile long cropFeverExpiryMs = 0;
@@ -896,13 +898,16 @@ public class TaunCore implements ClientModInitializer {
             chatTriggersEnabled = Boolean.parseBoolean(props.getProperty("chatTriggersEnabled", "true"));
             coordTriggersEnabled = Boolean.parseBoolean(props.getProperty("coordTriggersEnabled", "true"));
             rodswapEnabled = Boolean.parseBoolean(props.getProperty("rodswapEnabled", "false"));
+            rosedragEnabled = Boolean.parseBoolean(props.getProperty("rosedragEnabled", "false"));
             wardrobeSwapEnabled = Boolean.parseBoolean(props.getProperty("wardrobeSwapEnabled", "false"));
             etherwarpEnabled = Boolean.parseBoolean(props.getProperty("etherwarpEnabled", "false"));
             etherwarpYaw = Float.parseFloat(props.getProperty("etherwarpYaw", "-95"));
             etherwarpPitch = Float.parseFloat(props.getProperty("etherwarpPitch", "-70"));
             eqSwapEnabled = Boolean.parseBoolean(props.getProperty("eqSwapEnabled", "false"));
+            zorroEnabled = Boolean.parseBoolean(props.getProperty("zorroEnabled", "true"));
             finneganMode = Boolean.parseBoolean(props.getProperty("finneganMode", "false"));
             rotateSpeedMs = Long.parseLong(props.getProperty("rotateSpeedMs", "250"));
+            randomDelayRange = Integer.parseInt(props.getProperty("randomDelayRange", "0"));
             dynamicRestEnabled = Boolean.parseBoolean(props.getProperty("dynamicRestEnabled", "false"));
             restScriptingTime = Integer.parseInt(props.getProperty("restScriptingTime", "30"));
             restScriptingTimeOffset = Integer.parseInt(props.getProperty("restScriptingTimeOffset", "3"));
@@ -933,13 +938,16 @@ public class TaunCore implements ClientModInitializer {
             props.setProperty("chatTriggersEnabled", String.valueOf(chatTriggersEnabled));
             props.setProperty("coordTriggersEnabled", String.valueOf(coordTriggersEnabled));
             props.setProperty("rodswapEnabled", String.valueOf(rodswapEnabled));
+            props.setProperty("rosedragEnabled", String.valueOf(rosedragEnabled));
             props.setProperty("wardrobeSwapEnabled", String.valueOf(wardrobeSwapEnabled));
             props.setProperty("etherwarpEnabled", String.valueOf(etherwarpEnabled));
             props.setProperty("etherwarpYaw", String.valueOf(etherwarpYaw));
             props.setProperty("etherwarpPitch", String.valueOf(etherwarpPitch));
             props.setProperty("eqSwapEnabled", String.valueOf(eqSwapEnabled));
+            props.setProperty("zorroEnabled", String.valueOf(zorroEnabled));
             props.setProperty("finneganMode", String.valueOf(finneganMode));
             props.setProperty("rotateSpeedMs", String.valueOf(rotateSpeedMs));
+            props.setProperty("randomDelayRange", String.valueOf(randomDelayRange));
             props.setProperty("dynamicRestEnabled", String.valueOf(dynamicRestEnabled));
             props.setProperty("restScriptingTime", String.valueOf(restScriptingTime));
             props.setProperty("restScriptingTimeOffset", String.valueOf(restScriptingTimeOffset));
@@ -1551,7 +1559,9 @@ public class TaunCore implements ClientModInitializer {
         String swapLabel = target.equals("PEST") ? "Pest Hunter armor" : "Blossom/Lotus armor";
         java.util.List<String> keywords = new ArrayList<>();
         if (target.equals("PEST")) { keywords.add("pesthunter"); keywords.add("pest vest"); }
-        else if (target.equals("BLOSSOM_LOTUS")) { keywords.add("blossom"); keywords.add("lotus"); }
+        else if (target.equals("BLOSSOM_LOTUS")) {
+            keywords.add("blossom"); keywords.add("lotus"); // match all blossom/lotus pieces
+        }
         int waited = 0;
         while (client.currentScreen == null && waited < 2000) { Thread.sleep(50); waited += 50; }
         if (client.currentScreen == null) return;
@@ -1571,6 +1581,59 @@ public class TaunCore implements ClientModInitializer {
             } finally { latch.countDown(); }
         });
         latch.await();
+        // For BLOSSOM_LOTUS: exclude cloaks from general match, then add the correct cloak
+        if (target.equals("BLOSSOM_LOTUS")) {
+            java.util.List<Integer> cloakSlot = new ArrayList<>();
+            java.util.List<Integer> nonCloakSlots = new ArrayList<>();
+            java.util.concurrent.CountDownLatch cloakLatch = new java.util.concurrent.CountDownLatch(1);
+            client.execute(() -> {
+                try {
+                    if (client.player.currentScreenHandler != null) {
+                        var slots = client.player.currentScreenHandler.slots;
+                        for (int idx : matchingSlots) {
+                            String n = slots.get(idx).getStack().getName().getString().toLowerCase();
+                            if (!n.contains("cloak")) nonCloakSlots.add(idx);
+                        }
+                        // Live-check tablist for Jacob's Contest to avoid stale flag
+                        boolean jacobActive = false;
+                        if (zorroEnabled && client.player.networkHandler != null) {
+                            java.util.List<net.minecraft.client.network.PlayerListEntry> jEntries = new java.util.ArrayList<>(client.player.networkHandler.getPlayerList());
+                            for (int ji = 0; ji < jEntries.size(); ji++) {
+                                if (jEntries.get(ji).getDisplayName() == null) continue;
+                                String jt = jEntries.get(ji).getDisplayName().getString().replaceAll("§.", "");
+                                if (jt.contains("Jacob's Contest:")) {
+                                    jacobActive = jt.matches(".*\\d+m.*left.*") || jt.matches(".*\\d+s.*left.*");
+                                    if (debugEnabled) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[Zorro] Jacob entry: '" + jt + "' active=" + jacobActive), false);
+                                    break;
+                                }
+                            }
+                        }
+                        if (debugEnabled) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[Zorro] jacobActive=" + jacobActive + " zorroEnabled=" + zorroEnabled), false);
+                        // Pick correct cloak: zorro during jacob (fallback to lotus cloak), lotus cloak otherwise
+                        String cloakKeyword = (jacobActive && zorroEnabled) ? "zorro" : "lotus cloak";
+                        for (int idx = 0; idx < slots.size(); idx++) {
+                            var slot = slots.get(idx);
+                            if (!slot.hasStack()) continue;
+                            String n = slot.getStack().getName().getString().toLowerCase();
+                            if (n.contains(cloakKeyword)) { cloakSlot.add(idx); break; }
+                        }
+                        // Fallback: if zorro not found during jacob, try lotus cloak
+                        if (cloakSlot.isEmpty() && jacobActive && zorroEnabled) {
+                            for (int idx = 0; idx < slots.size(); idx++) {
+                                var slot = slots.get(idx);
+                                if (!slot.hasStack()) continue;
+                                String n = slot.getStack().getName().getString().toLowerCase();
+                                if (n.contains("lotus cloak") || n.contains("blossom cloak")) { cloakSlot.add(idx); break; }
+                            }
+                        }
+                    }
+                } finally { cloakLatch.countDown(); }
+            });
+            cloakLatch.await();
+            matchingSlots.clear();
+            matchingSlots.addAll(nonCloakSlots);
+            matchingSlots.addAll(cloakSlot);
+        }
         for (int slotIdx : matchingSlots) {
             final int fs = slotIdx;
             client.execute(() -> {
@@ -1641,13 +1704,21 @@ public class TaunCore implements ClientModInitializer {
 
     private static long applyRandomDelay(long baseDelay) {
         if (randomDelayRange <= 0) return baseDelay;
-        return baseDelay + random.nextInt(randomDelayRange + 1);
+        long delta = (long)(random.nextInt(randomDelayRange * 2 + 1)) - randomDelayRange;
+        return Math.max(0, baseDelay + delta);
+    }
+
+    public static void showRandomDelay() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Random delay: " + (randomDelayRange == 0 ? "§cDISABLED" : "§a±" + randomDelayRange + "ms")), false);
     }
 
     public static void setRandomDelay(int maxRandomMs) {
         randomDelayRange = Math.max(0, maxRandomMs);
+        saveSettings();
         MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player != null) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Random delay: " + (randomDelayRange == 0 ? "§cDISABLED" : "§a0-" + randomDelayRange + "ms")), false);
+        if (client.player != null) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Random delay: " + (randomDelayRange == 0 ? "§cDISABLED" : "§a±" + randomDelayRange + "ms")), false);
     }
 
     public static int getRandomDelay() { return randomDelayRange; }
@@ -1985,6 +2056,17 @@ public class TaunCore implements ClientModInitializer {
         saveSettings();
     }
 
+    public static void toggleRosedrag() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        rosedragEnabled = !rosedragEnabled;
+        saveSettings();
+        writePestTriggers("rodswap");
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Rosedrag mode: " + (rosedragEnabled ? "§aENABLED" : "§cDISABLED")), false);
+    }
+
+    public static boolean isRosedragEnabled() { return rosedragEnabled; }
+
     public static void toggleWardrobeSwap() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
@@ -2014,6 +2096,15 @@ public class TaunCore implements ClientModInitializer {
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §" + (eqSwapEnabled ? "aEquipment Swap: §aENABLED" : "cEquipment Swap: §cDISABLED")), false);
         writePestTriggers(rodswapEnabled ? "rodswap" : wardrobeSwapEnabled ? "wdswap" : "none");
         saveSettings();
+    }
+
+    public static void toggleZorro() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        zorroEnabled = !zorroEnabled;
+        saveSettings();
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Zorro's Cape during Jacob: " + (zorroEnabled ? "§aENABLED" : "§cDISABLED")), false);
+        if (zorroEnabled) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §e⚠ Make sure you give Jacob's Event enough priority in tablist"), false);
     }
 
     public static void toggleDebug() {
@@ -2135,11 +2226,13 @@ public class TaunCore implements ClientModInitializer {
         // Jacob's Contest tablist detection
         jacobContestActive = false;
         jacobTimerSeconds = -1;
-        for (var entry : entries) {
-            if (entry.getDisplayName() == null) continue;
-            String jText = entry.getDisplayName().getString().replaceAll("§.", "");
+        java.util.List<net.minecraft.client.network.PlayerListEntry> entryList = new java.util.ArrayList<>(entries);
+        for (int ei = 0; ei < entryList.size(); ei++) {
+            if (entryList.get(ei).getDisplayName() == null) continue;
+            String jText = entryList.get(ei).getDisplayName().getString().replaceAll("§.", "");
             if (jText.contains("Jacob's Contest:")) {
-                jacobContestActive = true;
+                // Active if the entry contains a time remaining pattern like "10m left", "5m 30s left", "30s left"
+                jacobContestActive = jText.matches(".*\\d+m.*left.*") || jText.matches(".*\\d+s.*left.*");
                 java.util.regex.Matcher m = java.util.regex.Pattern
                     .compile("(\\d+)m\\s*(\\d+)s|(\\d+)m|(\\d+)s")
                     .matcher(jText);
@@ -2891,7 +2984,9 @@ public class TaunCore implements ClientModInitializer {
                     if (eqSwapEnabled) t.append("  EQSWAP: BLOSSOM/LOTUS\n");
                     t.append("  COMMAND: /setspawn\n");
                     if (etherwarpEnabled) t.append(buildEtherwarpLine());
-                    t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n  COMMAND: /warp garden\n  HOLD: shift for 350ms\n  RODSWAP\n  COMMAND: .ez-startscript netherwart:1 after 100ms\n");
+                    t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n  COMMAND: /warp garden\n  HOLD: shift for 350ms\n");
+                    if (!rosedragEnabled) t.append("  RODSWAP\n");
+                    t.append("  COMMAND: .ez-startscript netherwart:1 after 100ms\n");
                     appendVisitorTriggers(t);
                     appendServerShutdownTrigger(t);
                 }
@@ -3087,7 +3182,7 @@ public class TaunCore implements ClientModInitializer {
         client.player.sendMessage(Text.literal("§e/pest abiphoneslot <1-9>   §7Set Abiphone hotbar slot (George sell)"), false);
         client.player.sendMessage(Text.literal("§e/pest georgesell   §7Toggle George slug auto-sell on/off"), false);
         client.player.sendMessage(Text.literal("§e/pest extrasell   §7Toggle overclocker/extra item sell via booster cookie GUI"), false);
-        client.player.sendMessage(Text.literal("§e/pest random <ms> §8— randomize all delays in triggers.txt by ±<ms>"), false);
+        client.player.sendMessage(Text.literal("§e/pest random <ms> §8— add ±<ms> runtime variance to all delays (0 to disable)"), false);
         client.player.sendMessage(Text.literal("§e/pest reload / detect / files / debug / help"), false);
         client.player.sendMessage(Text.literal("§c§l====================================="), false);
     }

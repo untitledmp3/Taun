@@ -31,6 +31,9 @@ public class TaunCommand {
                     // /pest rodswap
                     .then(ClientCommandManager.literal("rodswap")
                         .executes(ctx -> { TaunCore.toggleRodswap(); return 1; })
+                        .then(ClientCommandManager.literal("rosedrag")
+                            .executes(ctx -> { TaunCore.toggleRosedrag(); return 1; })
+                        )
                     )
                     // /pest wdswap
                     .then(ClientCommandManager.literal("wdswap")
@@ -47,6 +50,9 @@ public class TaunCommand {
                     // /pest eqswap
                     .then(ClientCommandManager.literal("eqswap")
                         .executes(ctx -> { TaunCore.toggleEqSwap(); return 1; })
+                        .then(ClientCommandManager.literal("zorro")
+                            .executes(ctx -> { TaunCore.toggleZorro(); return 1; })
+                        )
                     )
                     // /pest debug
                     .then(ClientCommandManager.literal("debug")
@@ -117,11 +123,19 @@ public class TaunCommand {
                         .executes(ctx -> { TaunCore.showDetectedTools(); return 1; })
                     )
 
-                    // /pest random <variance> — randomize all delays in triggers.txt by ±<variance> (e.g. 25ms, 1s, 50)
+                    // /pest random <ms> — add ±<ms> random variance to all delays at runtime
                     .then(ClientCommandManager.literal("random")
+                        .executes(ctx -> { TaunCore.showRandomDelay(); return 1; })
                         .then(ClientCommandManager.argument("variance", StringArgumentType.greedyString())
                             .executes(ctx -> {
-                                TaunCore.randomizeDelays(StringArgumentType.getString(ctx, "variance"));
+                                String input = StringArgumentType.getString(ctx, "variance").trim().toLowerCase();
+                                int ms;
+                                try {
+                                    if (input.endsWith("ms")) ms = Integer.parseInt(input.substring(0, input.length() - 2).trim());
+                                    else if (input.endsWith("s")) ms = (int)(Long.parseLong(input.substring(0, input.length() - 1).trim()) * 1000);
+                                    else ms = Integer.parseInt(input);
+                                } catch (NumberFormatException e) { return 1; }
+                                TaunCore.setRandomDelay(ms);
                                 return 1;
                             })
                         )
@@ -133,6 +147,9 @@ public class TaunCommand {
                     )
                     .then(ClientCommandManager.literal("extrasell")
                         .executes(ctx -> { TaunCore.toggleExtraSell(); return 1; })
+                    )
+                    .then(ClientCommandManager.literal("georgesell")
+                        .executes(ctx -> { TaunCore.toggleGeorgeSlugSell(); return 1; })
                     )
             );
         });
