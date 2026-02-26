@@ -40,3 +40,5 @@ Use Sprayonator = On
 Empty Bag = On  
 Empty At Start = Off  
 Use Pest Trap = Optional  
+
+Would recommend only using 1 or 2 plots.  
