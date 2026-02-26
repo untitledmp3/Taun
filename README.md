@@ -9,7 +9,7 @@ THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disabl
 
 /pest rodswap / wdswap / etherwarp / eqswap  
 /pest rodswap rosedrag (toggles rodswap compatibility for rosedrag rules)  
-/pest setetherwarp — lets u customize where u etherwarp to / where ur glass is
+/pest setetherwarp — lets u customize where u etherwarp to / where ur glass is  
 /pest eqswap zorro (toggles zorro cape usage during jacobs event) **MAKE SURE U GIVE JACOBS EVENT ENOUGH PRIORITY IN TABLIST**  
 
 /pest toggle chat / coords / all — toggles triggers / coordinate triggers on or off  
