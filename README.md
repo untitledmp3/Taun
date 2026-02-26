@@ -5,7 +5,8 @@ msg @videotaped if u have bugs or ask in taunahi thread
 
 /pest setup / setspawn / setend / setspawntrigger - FOLLOW THE SETUP https://www.youtube.com/watch?v=DgP2CiXtC_U  (AND BUILD UR FARM LIKE SHOWN IN THE SETUP)  
 /pest rodswap / wdswap / etherwarp / eqswap  
-/pest rodswap rosedrag  
+/pest rodswap rosedrag (toggles rodswap compatibility for rosedrag rules)  
+/pest eqswap zorro (toggles zorro cape usage during jacobs event) **MAKE SURE U GIVE JACOBS EVENT ENOUGH PRIORITY IN TABLIST**  
 /pest toggle chat / coords / all  
 /pest dynarest toggle on/off  
 /pest dynarest m / h — set farm time (e.g. 2h, 90m)  
