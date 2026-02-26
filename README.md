@@ -6,13 +6,18 @@ THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disabl
 ========= Taun+++ Commands =========  
 
 /pest setup / setspawn / setend / setspawntrigger - FOLLOW THE SETUP https://www.youtube.com/watch?v=DgP2CiXtC_U  (AND BUILD UR FARM LIKE SHOWN IN THE SETUP)  
+
 /pest rodswap / wdswap / etherwarp / eqswap  
 /pest rodswap rosedrag (toggles rodswap compatibility for rosedrag rules)  
 /pest eqswap zorro (toggles zorro cape usage during jacobs event) **MAKE SURE U GIVE JACOBS EVENT ENOUGH PRIORITY IN TABLIST**  
-/pest toggle chat / coords / all  
-/pest dynarest toggle on/off  
-/pest dynarest m / h — set farm time (e.g. 2h, 90m)  
-/pest dynarest breaktime m / scriptoffset m / status  
+
+/pest toggle chat / coords / all — toggles triggers / coordinate triggers on or off  
+/pest dynarest — toggles on or off  
+/pest dynarest time — set dynamic rest time (e.g. 2h, 2.5h 90m)   
+/pest dynarest breaktime minutes — how long before reconnecting  
+/pest dynarest scriptoffset minutes — adds randomness  
+/pest dynarest status — checks current settings and next disconnect
+
 /pest georgesell Toggle George slug auto-sell on/off  
 /pest extrasell  Toggle selling extra items using booster cookie menu (mantid claw, stereo, overclockers, larva, chips)  
 /pest random ms — randomize all delays in triggers.txt by ±<ms>  
