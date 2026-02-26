@@ -1,6 +1,8 @@
 mostly vibecoded.
 msg @videotaped if u have bugs or ask in taunahi thread
 
+THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disable etherwarp to glass roof and change autodirection for s-shape crop a bit)  
+
 ========= Taun+++ Commands =========  
 
 /pest setup / setspawn / setend / setspawntrigger - FOLLOW THE SETUP https://www.youtube.com/watch?v=DgP2CiXtC_U  (AND BUILD UR FARM LIKE SHOWN IN THE SETUP)  
