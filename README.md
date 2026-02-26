@@ -14,7 +14,7 @@ THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disabl
 /pest dynarest m / h — set farm time (e.g. 2h, 90m)  
 /pest dynarest breaktime m / scriptoffset m / status  
 /pest georgesell Toggle George slug auto-sell on/off  
-/pest extrasell  Toggle selling extra items using booster cookie menu (mantid claw, stereo, overclockers, larva)  
+/pest extrasell  Toggle selling extra items using booster cookie menu (mantid claw, stereo, overclockers, larva, chips)  
 /pest random ms — randomize all delays in triggers.txt by ±<ms>  
 /pest reload / detect / files / debug / help   
 
