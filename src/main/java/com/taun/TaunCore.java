@@ -341,7 +341,7 @@ public class TaunCore implements ClientModInitializer {
                         Thread.sleep(600);
                     }
                     foundAny = true;
-                    Thread.sleep(400);
+                    Thread.sleep(650);
                 } else {
                     foundMore = false;
                 }
@@ -1610,7 +1610,7 @@ public class TaunCore implements ClientModInitializer {
                         }
                         if (debugEnabled) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[Zorro] jacobActive=" + jacobActive + " zorroEnabled=" + zorroEnabled), false);
                         // Pick correct cloak: zorro during jacob (fallback to lotus cloak), lotus cloak otherwise
-                        String cloakKeyword = (jacobActive && zorroEnabled) ? "zorro" : "lotus cloak";
+                        String cloakKeyword = (jacobActive && zorroEnabled) ? "zorro" : "cloak";
                         for (int idx = 0; idx < slots.size(); idx++) {
                             var slot = slots.get(idx);
                             if (!slot.hasStack()) continue;
@@ -1623,7 +1623,7 @@ public class TaunCore implements ClientModInitializer {
                                 var slot = slots.get(idx);
                                 if (!slot.hasStack()) continue;
                                 String n = slot.getStack().getName().getString().toLowerCase();
-                                if (n.contains("lotus cloak") || n.contains("blossom cloak")) { cloakSlot.add(idx); break; }
+                                if (n.contains("cloak")) { cloakSlot.add(idx); break; }
                             }
                         }
                     }
@@ -1640,7 +1640,7 @@ public class TaunCore implements ClientModInitializer {
                 if (client.player.currentScreenHandler != null)
                     client.interactionManager.clickSlot(client.player.currentScreenHandler.syncId, fs, 0, net.minecraft.screen.slot.SlotActionType.PICKUP, client.player);
             });
-            Thread.sleep(325);
+            Thread.sleep(650);
         }
         // Close the screen and wait for it to actually close before continuing
         if (client.currentScreen != null) {
@@ -2560,7 +2560,7 @@ public class TaunCore implements ClientModInitializer {
                 mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, cs, 0,
                     net.minecraft.screen.slot.SlotActionType.QUICK_MOVE, mc.player);
         });
-        Thread.sleep(400);
+        Thread.sleep(650);
 
         // ── Step 6: scan for the green clay (lime/green terracotta or stained glass confirm button)
         //    and click it twice with a short delay between clicks ──────────────
@@ -2992,7 +2992,7 @@ public class TaunCore implements ClientModInitializer {
                 }
                 case "wdswap" -> {
                     t.append("# wardrobe swap config\n");
-                    t.append("EQPestCDWD:\n  COMMAND: .ez-stopscript\n  EQSWAP: PEST\n  COMMAND: .ez-startscript netherwart:1 after 100ms\n\n");
+                    if (eqSwapEnabled) t.append("EQPestCDWD:\n  COMMAND: .ez-stopscript\n  EQSWAP: PEST\n  COMMAND: .ez-startscript netherwart:1 after 100ms\n\n");
                     t.append("TRIGGER: \"spawned in\"\n  WAITFORCHAT: \"script stopped. [Pests]\"\n  COMMAND: /setspawn\n  IFCROPFEVER: SKIP_GUI\n  WAITONGUIOPEN\n  COMMAND: .ez-stopscript\n");
                     if (eqSwapEnabled) t.append("  EQSWAP: BLOSSOM/LOTUS\n");
                     if (etherwarpEnabled) t.append(buildEtherwarpLine());
