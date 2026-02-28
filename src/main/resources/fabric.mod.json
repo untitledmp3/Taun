@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
   "id": "taun",
-  "version": "2.1.3",
+  "version": "2.0.3",
   "name": "Taun+++",
   "description": "99% vibecoded. exercise? i thought u meant extra fries.",
   "authors": [
-    "@videotaped on discord + claude ai"
+    "@videotaped on discord + claude ai <3"
   ],
   "contact": {
-    "homepage": ""
+    "homepage": "https://github.com/untitledmp3/Taun"
   },
   "license": "MIT",
   "icon": "assets/taun/icon.png",

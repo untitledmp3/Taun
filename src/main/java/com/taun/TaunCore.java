@@ -28,7 +28,7 @@ import java.util.Properties;
 
 public class TaunCore implements ClientModInitializer {
     public static final String MOD_ID = "Taun+++";
-    private static final int CONFIG_VERSION = 15;
+    private static final int CONFIG_VERSION = 16;
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
     
     private static final List<ChatTrigger> triggers = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -60,6 +60,7 @@ public class TaunCore implements ClientModInitializer {
     private static float etherwarpPitch = -70f; // center pitch, ±10 applied, clamped to -90
     private static volatile boolean settingEtherwarpCoords = false; // true while waiting for RMB to capture coords
     private static long rotateSpeedMs = 250;
+    private static long guiClickDelayMs = 400; // delay between GUI slot clicks (wardrobe swap + eq swap)
     private static boolean coordTriggersEnabled = true;
     
     private static boolean lastPestCooldownReady = false;
@@ -68,8 +69,16 @@ public class TaunCore implements ClientModInitializer {
     private static String lastPestCooldownText = "";
     private static boolean eqSwapEnabled = false;
     private static boolean finneganMode = false; // kept for settings migration, no longer used
+    // ── Wardrobe slot config ──────────────────────────────────────────────────
+    /** Wardrobe slot (1-9) for the farming fortune set (FF/Blossom/Lotus). 0 = not set. */
+    private static int wardrobeFfSlot = 0;
+    /** Wardrobe slot (1-9) for the bonus pest chance set (BPC/Pest). 0 = not set. */
+    private static int wardrobeBpcSlot = 0;
+    private static boolean wardrobeSetupActive = false;
+    private static int wardrobeSetupStep = 0;
     private static boolean debugEnabled = false;
     private static long lastEqSwapFireTime = 0;
+    private static long setupFinishTime = 0; // triggers blocked for 5s after setup
     private static final long EQ_SWAP_COOLDOWN_MS = 15 * 1000;
     private static boolean isFarming = false;
 
@@ -119,8 +128,8 @@ public class TaunCore implements ClientModInitializer {
         int slugs = countSlugsInInventory(client);
         if (slugs <= 0) return;
         boolean full = isInventoryFull(client);
-        if (full && slugs < SLUG_SELL_THRESHOLD) return; // inventory full but not enough slugs yet — AutoSell will handle it
-        if (slugs < SLUG_SELL_THRESHOLD) return;
+        if (full && slugs < slugSellThreshold) return; // inventory full but not enough slugs yet — AutoSell will handle it
+        if (slugs < slugSellThreshold) return;
         // Threshold reached — sell immediately
         georgeSlugSellActive = true;
         lastGeorgeSlugSellTime = System.currentTimeMillis();
@@ -263,6 +272,9 @@ public class TaunCore implements ClientModInitializer {
     }
 
     private static boolean boosterCookieEnabled = true;
+    private static int extraSellThreshold = 1; // min items in inventory to trigger booster cookie sell
+    private static boolean dropBooksEnabled = false;
+    private static int dropBooksThreshold = 1; // min matching books in inventory to trigger drop
     private static final java.util.List<String> BOOSTER_COOKIE_ITEMS = java.util.List.of(
         "wriggling larva", "chirping stereo", "mantid claw", "overclocker", "chip"
     );
@@ -273,20 +285,19 @@ public class TaunCore implements ClientModInitializer {
         if (mc.player == null) return;
 
         // Check if any target items are in inventory before opening GUI
-        boolean hasItems = false;
+        int extraSellCount = 0;
         if (mc.player != null) {
             for (int i = 0; i < 36; i++) {
                 var stack = mc.player.getInventory().getStack(i);
                 if (stack.isEmpty()) continue;
                 String name = stack.getName().getString().replaceAll("§.", "").toLowerCase();
                 for (String target : BOOSTER_COOKIE_ITEMS) {
-                    if (name.contains(target)) { hasItems = true; break; }
+                    if (name.contains(target)) { extraSellCount += stack.getCount(); break; }
                 }
-                if (hasItems) break;
             }
         }
-        if (!hasItems) {
-            if (debugEnabled) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7No booster cookie items in inventory, skipping"), false);
+        if (extraSellCount < extraSellThreshold) {
+            if (debugEnabled) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra sell items: " + extraSellCount + "/" + extraSellThreshold + " threshold, skipping"), false);
             return;
         }
 
@@ -369,7 +380,7 @@ public class TaunCore implements ClientModInitializer {
     private static volatile boolean georgeSlugSellActive = false; // prevents re-entry
     private static long lastGeorgeSlugSellTime = 0;
     private static final long GEORGE_SLUG_SELL_COOLDOWN_MS = 60_000; // 1 min between sells
-    private static final int SLUG_SELL_THRESHOLD = 3; // trigger sell when >= this many slugs
+    private static int slugSellThreshold = 3; // trigger sell when >= this many slugs
     private static boolean georgeSlugSellEnabled = true; // toggle via /pest georgesell
 
     // Runtime tracking
@@ -384,6 +395,7 @@ public class TaunCore implements ClientModInitializer {
     private static volatile long cropFeverExpiryMs = 0;
     private static volatile String waitForChatPhrase = null;
     private static volatile boolean waitForChatMatched = false;
+    private static volatile boolean lastWaitForChatMatched = false; // set after each WAITFORCHAT; false if timed out
     private static final List<PestCdTrigger> eqPestCdTriggers = new java.util.concurrent.CopyOnWriteArrayList<>();
     private static final List<PestCdTrigger> eqPestCdWdTriggers = new java.util.concurrent.CopyOnWriteArrayList<>();
     
@@ -395,14 +407,12 @@ public class TaunCore implements ClientModInitializer {
     private static int slugCheckTickCounter = 0;
     private static final java.util.Random random = new java.util.Random();
     
-    public static volatile boolean blockingInputs = false;
     
     private static boolean setupWizardActive = false;
     private static int setupStep = 0;
     private static volatile boolean setupCommandExecuted = false;
     private static final Map<String, String> setupData = new HashMap<>();
     
-    private static final Map<String, Long> blockedCommands = new HashMap<>();
     
     @Override
     public void onInitializeClient() {
@@ -436,10 +446,15 @@ public class TaunCore implements ClientModInitializer {
             cropFeverExpiryMs = 0;
             waitForChatPhrase = null;
             waitForChatMatched = false;
+            lastWaitForChatMatched = false;
             georgeSlugSellActive = false;
         });
         
         net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents.ALLOW_CHAT.register((message) -> {
+            if (isWardrobeSetupActive()) {
+                handleWardrobeSetupInput(message);
+                return false;
+            }
             if (isSetupActive()) {
                 handleSetupInput(message);
                 return false;
@@ -506,7 +521,17 @@ public class TaunCore implements ClientModInitializer {
                 MinecraftClient mc2 = MinecraftClient.getInstance();
                 int slugCount = countSlugsInInventory(mc2);
                 boolean hasSlugs = georgeSlugSellEnabled && slugCount > 0;
-                boolean hasBoosterItems = boosterCookieEnabled;
+                boolean hasBoosterItems = false;
+                if (boosterCookieEnabled) {
+                    int bcount = 0;
+                    for (int bi = 0; bi < 36; bi++) {
+                        var bstack = mc2.player.getInventory().getStack(bi);
+                        if (bstack.isEmpty()) continue;
+                        String bname = bstack.getName().getString().replaceAll("§.", "").toLowerCase();
+                        for (String btarget : BOOSTER_COOKIE_ITEMS) { if (bname.contains(btarget)) { bcount += bstack.getCount(); break; } }
+                    }
+                    hasBoosterItems = bcount >= extraSellThreshold;
+                }
                 if (hasSlugs || hasBoosterItems) {
                     georgeSlugSellActive = true;
                     lastGeorgeSlugSellTime = System.currentTimeMillis();
@@ -525,7 +550,7 @@ public class TaunCore implements ClientModInitializer {
                         }
                     }, "taun-slug-sell-autosell").start();
                 }
-            } else if (strippedText.contains("spawned in")) {
+            } else if (strippedText.contains("spawned in") || strippedText.contains("have spawned")) {
                 eqSwapPending = false;
             }
 
@@ -546,6 +571,7 @@ public class TaunCore implements ClientModInitializer {
             for (ChatTrigger trigger : triggers) {
                 if (trigger.matches(strippedText)) {
                     String triggerKey = trigger.getGroupKey();
+                    if (setupFinishTime > currentTime) continue; // 5s cooldown after setup
                     Long lastTriggered = chatTriggerCooldowns.get(triggerKey);
                     if (lastTriggered != null && (currentTime - lastTriggered) < CHAT_TRIGGER_COOLDOWN) continue;
                     chatTriggerCooldowns.put(triggerKey, currentTime);
@@ -554,8 +580,6 @@ public class TaunCore implements ClientModInitializer {
                     final long delay = trigger.getDelayMs();
                     final List<ChatTrigger.KeybindAction> keybindActions = trigger.getKeybindActions();
                     final boolean hasKeybind = trigger.hasKeybind();
-                    final boolean blockInputs = trigger.shouldBlockInputs();
-                    final long blockInputsDelay = trigger.getBlockInputsDelay();
                     final boolean waitOnGui = trigger.shouldWaitOnGuiClosure();
                     final long waitOnGuiDelay = trigger.getWaitOnGuiClosureDelay();
                     final boolean waitOnGuiOpen = trigger.shouldWaitOnGuiOpen();
@@ -572,25 +596,14 @@ public class TaunCore implements ClientModInitializer {
                                     waitForGuiClosure(waitOnGuiDelay);
                                 }
                                 if (useSequence) {
-                                    executeActionSequence(trigger.getActions(), blockInputs, blockInputsDelay);
+                                    executeActionSequence(trigger.getActions());
                                 } else {
                                     if (!commandToExecute.isEmpty()) executeCommand(commandToExecute);
-                                    if (trigger.hasBlockedCommands()) {
-                                        for (ChatTrigger.BlockedCommand blocked : trigger.getBlockedCommands()) {
-                                            activateCommandBlock(blocked.command, blocked.durationSeconds);
-                                        }
-                                    }
                                     if (hasKeybind) {
-                                        if (blockInputs && blockInputsDelay > 0) Thread.sleep(blockInputsDelay);
                                         for (ChatTrigger.KeybindAction action : keybindActions) {
                                             Thread.sleep(applyRandomDelay(action.delayMs));
                                             pressKey(action.key, action.originalKey);
                                         }
-                                    }
-                                }
-                                if (trigger.hasBlockedCommands()) {
-                                    for (ChatTrigger.BlockedCommand blocked : trigger.getBlockedCommands()) {
-                                        activateCommandBlock(blocked.command, blocked.durationSeconds);
                                     }
                                 }
                             } catch (InterruptedException e) {
@@ -607,53 +620,30 @@ public class TaunCore implements ClientModInitializer {
                                         waitForGuiClosure(waitOnGuiDelay);
                                     }
                                     if (useSequence) {
-                                        executeActionSequence(trigger.getActions(), blockInputs, blockInputsDelay);
+                                        executeActionSequence(trigger.getActions());
                                     } else {
                                         if (!commandToExecute.isEmpty()) executeCommand(commandToExecute);
-                                        if (trigger.hasBlockedCommands()) {
-                                            for (ChatTrigger.BlockedCommand blocked : trigger.getBlockedCommands()) {
-                                                activateCommandBlock(blocked.command, blocked.durationSeconds);
-                                            }
-                                        }
                                         if (hasKeybind) {
-                                            if (blockInputs && blockInputsDelay > 0) Thread.sleep(blockInputsDelay);
-                                            if (blockInputs) blockingInputs = true;
                                             for (ChatTrigger.KeybindAction action : keybindActions) {
                                                 Thread.sleep(applyRandomDelay(action.delayMs));
                                                 pressKey(action.key, action.originalKey);
                                             }
-                                            if (blockInputs) { Thread.sleep(50); blockingInputs = false; }
-                                        }
-                                    }
-                                    if (trigger.hasBlockedCommands()) {
-                                        for (ChatTrigger.BlockedCommand blocked : trigger.getBlockedCommands()) {
-                                            activateCommandBlock(blocked.command, blocked.durationSeconds);
                                         }
                                     }
                                 } catch (InterruptedException e) {
-                                    if (blockInputs) blockingInputs = false;
                                     LOGGER.error("Execution interrupted", e);
                                 }
                             }).start();
                         } else {
                             if (!commandToExecute.isEmpty()) executeCommand(commandToExecute);
-                            if (trigger.hasBlockedCommands()) {
-                                for (ChatTrigger.BlockedCommand blocked : trigger.getBlockedCommands()) {
-                                    activateCommandBlock(blocked.command, blocked.durationSeconds);
-                                }
-                            }
                             if (hasKeybind) {
                                 new Thread(() -> {
                                     try {
-                                        if (blockInputs && blockInputsDelay > 0) Thread.sleep(blockInputsDelay);
-                                        if (blockInputs) blockingInputs = true;
                                         for (ChatTrigger.KeybindAction action : keybindActions) {
                                             Thread.sleep(applyRandomDelay(action.delayMs));
                                             pressKey(action.key, action.originalKey);
                                         }
-                                        if (blockInputs) { Thread.sleep(50); blockingInputs = false; }
                                     } catch (InterruptedException e) {
-                                        if (blockInputs) blockingInputs = false;
                                         LOGGER.error("Keybind press interrupted", e);
                                     }
                                 }).start();
@@ -907,12 +897,20 @@ public class TaunCore implements ClientModInitializer {
             zorroEnabled = Boolean.parseBoolean(props.getProperty("zorroEnabled", "true"));
             finneganMode = Boolean.parseBoolean(props.getProperty("finneganMode", "false"));
             rotateSpeedMs = Long.parseLong(props.getProperty("rotateSpeedMs", "250"));
+            guiClickDelayMs = Long.parseLong(props.getProperty("guiClickDelayMs", "400"));
             randomDelayRange = Integer.parseInt(props.getProperty("randomDelayRange", "0"));
             dynamicRestEnabled = Boolean.parseBoolean(props.getProperty("dynamicRestEnabled", "false"));
             restScriptingTime = Integer.parseInt(props.getProperty("restScriptingTime", "30"));
             restScriptingTimeOffset = Integer.parseInt(props.getProperty("restScriptingTimeOffset", "3"));
             restBreakTime = Integer.parseInt(props.getProperty("restBreakTime", "10"));            abiphoneSlot = Integer.parseInt(props.getProperty("abiphoneSlot", "0"));
             georgeSlugSellEnabled = Boolean.parseBoolean(props.getProperty("georgeSlugSellEnabled", "true"));
+            boosterCookieEnabled = Boolean.parseBoolean(props.getProperty("boosterCookieEnabled", "true"));
+            extraSellThreshold = Integer.parseInt(props.getProperty("extraSellThreshold", "1"));
+            dropBooksEnabled = Boolean.parseBoolean(props.getProperty("dropBooksEnabled", "false"));
+            dropBooksThreshold = Integer.parseInt(props.getProperty("dropBooksThreshold", "1"));
+            slugSellThreshold = Integer.parseInt(props.getProperty("slugSellThreshold", "3"));
+            wardrobeFfSlot = Integer.parseInt(props.getProperty("wardrobeFfSlot", "0"));
+            wardrobeBpcSlot = Integer.parseInt(props.getProperty("wardrobeBpcSlot", "0"));
             long savedTriggerMs = Long.parseLong(props.getProperty("nextRestTriggerMs", "0"));
             nextRestTriggerMs = (savedTriggerMs > System.currentTimeMillis()) ? savedTriggerMs : 0;
             if (rodswapEnabled && wardrobeSwapEnabled) {
@@ -947,6 +945,7 @@ public class TaunCore implements ClientModInitializer {
             props.setProperty("zorroEnabled", String.valueOf(zorroEnabled));
             props.setProperty("finneganMode", String.valueOf(finneganMode));
             props.setProperty("rotateSpeedMs", String.valueOf(rotateSpeedMs));
+            props.setProperty("guiClickDelayMs", String.valueOf(guiClickDelayMs));
             props.setProperty("randomDelayRange", String.valueOf(randomDelayRange));
             props.setProperty("dynamicRestEnabled", String.valueOf(dynamicRestEnabled));
             props.setProperty("restScriptingTime", String.valueOf(restScriptingTime));
@@ -955,6 +954,13 @@ public class TaunCore implements ClientModInitializer {
             props.setProperty("nextRestTriggerMs", String.valueOf(nextRestTriggerMs));
             props.setProperty("abiphoneSlot", String.valueOf(abiphoneSlot));
             props.setProperty("georgeSlugSellEnabled", String.valueOf(georgeSlugSellEnabled));
+            props.setProperty("boosterCookieEnabled", String.valueOf(boosterCookieEnabled));
+            props.setProperty("extraSellThreshold", String.valueOf(extraSellThreshold));
+            props.setProperty("dropBooksEnabled", String.valueOf(dropBooksEnabled));
+            props.setProperty("dropBooksThreshold", String.valueOf(dropBooksThreshold));
+            props.setProperty("slugSellThreshold", String.valueOf(slugSellThreshold));
+            props.setProperty("wardrobeFfSlot", String.valueOf(wardrobeFfSlot));
+            props.setProperty("wardrobeBpcSlot", String.valueOf(wardrobeBpcSlot));
             props.setProperty("configVersion", String.valueOf(CONFIG_VERSION));
             props.store(Files.newBufferedWriter(settingsPath), "Taun+++ Settings - auto-generated");
             LOGGER.info("Settings saved");
@@ -1007,8 +1013,7 @@ public class TaunCore implements ClientModInitializer {
                                            Object[] out) {
         String command = (String) out[0];
         long commandDelay = (Long) out[1];
-        boolean blockInputs = (Boolean) out[2];
-        long blockInputsDelay = (Long) out[3];
+        
 
         if (line.startsWith("COMMAND:")) {
             String commandStr = line.substring("COMMAND:".length()).trim();
@@ -1112,9 +1117,23 @@ public class TaunCore implements ClientModInitializer {
             actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.IFJACOB_FALSE, "", "", 0));
         } else if (line.equals("IFJACOB=TRUE")) {
             actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.IFJACOB_TRUE, "", "", 0));
+        } else if (line.startsWith("PRELISTEN:")) {
+            String raw = line.substring("PRELISTEN:".length()).trim().replaceAll("^\"|\"$", "");
+            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.PRELISTEN, raw, "", 0));
         } else if (line.startsWith("WAITFORCHAT:")) {
-            String phrase = line.substring("WAITFORCHAT:".length()).trim().replaceAll("^\"|\"$", "");
-            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.WAITFORCHAT, phrase, "", 0));
+            String raw = line.substring("WAITFORCHAT:".length()).trim();
+            // Support optional: WAITFORCHAT: "phrase" timeout 3000ms
+            long timeoutMs = 0;
+            java.util.regex.Matcher tm = java.util.regex.Pattern.compile("^\"?(.*?)\"?\\s+timeout\\s+(\\S+)$").matcher(raw.trim());
+            if (tm.matches()) {
+                raw = tm.group(1).trim();
+                timeoutMs = parseTime(tm.group(2).trim());
+            } else {
+                raw = raw.replaceAll("^\"|\"$", "");
+            }
+            // Encode timeout into value as "phrase\0timeoutMs" if set
+            String encoded = timeoutMs > 0 ? raw + "\0" + timeoutMs : raw;
+            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.WAITFORCHAT, encoded, "", 0));
         } else if (line.startsWith("WAITFORJACOBTIMER:")) {
             String secStr = line.substring("WAITFORJACOBTIMER:".length()).trim();
             int threshold = 5;
@@ -1123,17 +1142,37 @@ public class TaunCore implements ClientModInitializer {
         } else if (line.startsWith("IFCROPFEVER:")) {
             String val = line.substring("IFCROPFEVER:".length()).trim().toUpperCase();
             if (val.equals("SKIP_GUI")) actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.IFCROPFEVER_SKIP_GUI, "", "", 0));
-        } else if (line.equals("RETRYUNTILSKYBLOCK")) {
-            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.RETRYUNTILSKYBLOCK, "", "", 0));
+        } else if (line.startsWith("DROPBOOKS:")) {
+            String dbStr = line.substring("DROPBOOKS:".length()).trim();
+            // store threshold as string in value field, parsed at execution time
+            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.DROPBOOKS, dbStr, "", 0));
+        } else if (line.equals("WAITUNTILFARMING")) {
+            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.WAITUNTILFARMING, "", "", 0));
+        } else if (line.equals("WDSWAP_FF") || line.startsWith("WDSWAP_FF ")) {
+            String[] wdffParts = line.split("\s+after\s+", 2);
+            long wdffDelay = wdffParts.length == 2 ? parseTime(wdffParts[1].trim()) : 0;
+            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.WDSWAP_FF, "", "", wdffDelay));
+        } else if (line.equals("WDSWAP_BPC") || line.startsWith("WDSWAP_BPC ")) {
+            String[] wdbpcParts = line.split("\s+after\s+", 2);
+            long wdbpcDelay = wdbpcParts.length == 2 ? parseTime(wdbpcParts[1].trim()) : 0;
+            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.WDSWAP_BPC, "", "", wdbpcDelay));
+        } else if (line.equals("RETRYUNTILSKYBLOCK") || line.startsWith("RETRYUNTILSKYBLOCK ")) {
+            String[] rsbParts = line.split("\\s+after\\s+", 2);
+            long rsbDelay = rsbParts.length == 2 ? parseTime(rsbParts[1].trim()) : 8000;
+            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.RETRYUNTILSKYBLOCK, "", "", rsbDelay));
         } else if (line.startsWith("WAITONGUIOPEN")) {
             long preDelay = 0;
-            if (line.startsWith("WAITONGUIOPEN after")) preDelay = parseTime(line.substring("WAITONGUIOPEN after".length()).trim());
-            actionList.add(new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.WAITONGUIOPEN, "", "", preDelay));
+            boolean ifMatched = false;
+            String wogLine = line.substring("WAITONGUIOPEN".length()).trim();
+            if (wogLine.startsWith("ifmatched")) { ifMatched = true; wogLine = wogLine.substring("ifmatched".length()).trim(); }
+            if (wogLine.startsWith("after")) preDelay = parseTime(wogLine.substring("after".length()).trim());
+            ChatTrigger.TriggerAction wogAction = new ChatTrigger.TriggerAction(ChatTrigger.TriggerAction.Type.WAITONGUIOPEN, ifMatched ? "ifmatched" : "", "", preDelay);
+            actionList.add(wogAction);
         } else {
-            out[0] = command; out[1] = commandDelay; out[2] = blockInputs; out[3] = blockInputsDelay;
+            out[0] = command; out[1] = commandDelay;
             return false;
         }
-        out[0] = command; out[1] = commandDelay; out[2] = blockInputs; out[3] = blockInputsDelay;
+        out[0] = command; out[1] = commandDelay;
         return true;
     }
 
@@ -1160,8 +1199,6 @@ public class TaunCore implements ClientModInitializer {
         String command = ""; long commandDelay = 0;
         List<ChatTrigger.KeybindAction> keybindActions = new ArrayList<>();
         List<ChatTrigger.TriggerAction> actionList = new ArrayList<>();
-        boolean blockInputs = false; long blockInputsDelay = 0;
-        List<ChatTrigger.BlockedCommand> blockedCommands = new ArrayList<>();
         boolean waitOnGuiClosure = false; long waitOnGuiClosureDelay = 0; boolean waitOnGuiOpen = false; long waitOnGuiOpenDelay = 0;
         int i = startIndex + 1;
         while (i < lines.size()) {
@@ -1169,9 +1206,9 @@ public class TaunCore implements ClientModInitializer {
             String line = originalLine;
             for (Map.Entry<String, String> var : variables.entrySet()) line = line.replace(var.getKey(), var.getValue());
             if (line.isEmpty() || line.startsWith("TRIGGER:") || line.startsWith("#") || line.startsWith("@")) break;
-            Object[] out = new Object[]{command, commandDelay, blockInputs, blockInputsDelay};
+            Object[] out = new Object[]{command, commandDelay};
             if (parseActionLine(line, originalLine, actionList, keybindActions, out)) {
-                command = (String) out[0]; commandDelay = (Long) out[1]; blockInputs = (Boolean) out[2]; blockInputsDelay = (Long) out[3];
+                command = (String) out[0]; commandDelay = (Long) out[1];
             } else if (line.startsWith("DELAY:")) {
                 commandDelay = parseTime(line.substring("DELAY:".length()).trim());
             } else if (line.startsWith("WAITONGUICLOSURE")) {
@@ -1180,23 +1217,16 @@ public class TaunCore implements ClientModInitializer {
             } else if (line.startsWith("WAITONGUIOPEN")) {
                 if (line.startsWith("WAITONGUIOPEN after")) waitOnGuiOpenDelay = parseTime(line.substring("WAITONGUIOPEN after".length()).trim());
                 waitOnGuiOpen = true;
-            } else if (line.startsWith("BLOCK:")) {
-                String blockStr = line.substring("BLOCK:".length()).trim();
-                String[] parts = blockStr.split("\\s+for\\s+", 2);
-                if (parts.length == 2) {
-                    String cmdToBlock = parts[0].trim();
-                    if (cmdToBlock.startsWith("/")) cmdToBlock = cmdToBlock.substring(1);
-                    blockedCommands.add(new ChatTrigger.BlockedCommand(cmdToBlock, (int)(parseTime(parts[1].trim()) / 1000)));
-                }
             }
             i++;
         }
         if (command.isEmpty() && keybindActions.isEmpty() && actionList.isEmpty()) return i;
         // Register one trigger per phrase (supports TRIGGER: "a" or "b" or "c")
+        String groupKey = triggerPhrases[0];
         for (String phrase : triggerPhrases) {
             if (phrase == null || phrase.isEmpty()) continue;
             try {
-                ChatTrigger t = new ChatTrigger(phrase, rawTriggerText, command, commandDelay, keybindActions, blockInputs, blockInputsDelay, blockedCommands, waitOnGuiClosure, waitOnGuiClosureDelay, waitOnGuiOpen, waitOnGuiOpenDelay);
+                ChatTrigger t = new ChatTrigger(phrase, groupKey, command, commandDelay, keybindActions, waitOnGuiClosure, waitOnGuiClosureDelay, waitOnGuiOpen, waitOnGuiOpenDelay);
                 t.actions.addAll(actionList);
                 triggers.add(t);
             } catch (IllegalArgumentException e) { LOGGER.error("Failed to create trigger '{}' on line {}: {}", phrase, startIndex + 1, e.getMessage()); }
@@ -1208,24 +1238,19 @@ public class TaunCore implements ClientModInitializer {
         String command = ""; long commandDelay = 0;
         List<ChatTrigger.KeybindAction> keybindActions = new ArrayList<>();
         List<ChatTrigger.TriggerAction> actionList = new ArrayList<>();
-        boolean blockInputs = false; long blockInputsDelay = 0;
-        List<ChatTrigger.BlockedCommand> blockedCommands = new ArrayList<>();
         int i = startIndex + 1;
         while (i < lines.size()) {
             String originalLine = lines.get(i).trim(); String line = originalLine;
             for (Map.Entry<String, String> var : variables.entrySet()) line = line.replace(var.getKey(), var.getValue());
             if (line.isEmpty() || line.startsWith("TRIGGER:") || line.startsWith("PestCD:") || line.startsWith("#") || line.startsWith("@")) break;
             if (line.startsWith("DELAY:")) { commandDelay = parseTime(line.substring("DELAY:".length()).trim()); }
-            else if (line.startsWith("BLOCK:")) {
-                String[] parts = line.substring("BLOCK:".length()).trim().split("\\s+for\\s+", 2);
-                if (parts.length == 2) { String cmd = parts[0].trim(); if (cmd.startsWith("/")) cmd = cmd.substring(1); blockedCommands.add(new ChatTrigger.BlockedCommand(cmd, (int)(parseTime(parts[1].trim()) / 1000))); }
-            } else {
-                Object[] out = new Object[]{command, commandDelay, blockInputs, blockInputsDelay};
-                if (parseActionLine(line, originalLine, actionList, keybindActions, out)) { command = (String) out[0]; commandDelay = (Long) out[1]; blockInputs = (Boolean) out[2]; blockInputsDelay = (Long) out[3]; }
+            else {
+                Object[] out = new Object[]{command, commandDelay};
+                if (parseActionLine(line, originalLine, actionList, keybindActions, out)) { command = (String) out[0]; commandDelay = (Long) out[1]; }
             }
             i++;
         }
-        if (!command.isEmpty() || !keybindActions.isEmpty()) pestCdTriggers.add(new PestCdTrigger(command, commandDelay, keybindActions, blockInputs, blockInputsDelay, blockedCommands, actionList));
+        if (!command.isEmpty() || !keybindActions.isEmpty() || !actionList.isEmpty()) pestCdTriggers.add(new PestCdTrigger(command, commandDelay, keybindActions, actionList));
         return i;
     }
 
@@ -1233,24 +1258,19 @@ public class TaunCore implements ClientModInitializer {
         String command = ""; long commandDelay = 0;
         List<ChatTrigger.KeybindAction> keybindActions = new ArrayList<>();
         List<ChatTrigger.TriggerAction> actionList = new ArrayList<>();
-        boolean blockInputs = false; long blockInputsDelay = 0;
-        List<ChatTrigger.BlockedCommand> blockedCommands = new ArrayList<>();
         int i = startIndex + 1;
         while (i < lines.size()) {
             String originalLine = lines.get(i).trim(); String line = originalLine;
             for (Map.Entry<String, String> var : variables.entrySet()) line = line.replace(var.getKey(), var.getValue());
             if (line.isEmpty() || line.startsWith("TRIGGER:") || line.startsWith("PestCD:") || line.startsWith("EQPestCD:") || line.startsWith("EQPestCDWD:") || line.startsWith("EQPestCDFIN:") || line.startsWith("#") || line.startsWith("@")) break;
             if (line.startsWith("DELAY:")) { commandDelay = parseTime(line.substring("DELAY:".length()).trim()); }
-            else if (line.startsWith("BLOCK:")) {
-                String[] parts = line.substring("BLOCK:".length()).trim().split("\\s+for\\s+", 2);
-                if (parts.length == 2) { String cmd = parts[0].trim(); if (cmd.startsWith("/")) cmd = cmd.substring(1); blockedCommands.add(new ChatTrigger.BlockedCommand(cmd, (int)(parseTime(parts[1].trim()) / 1000))); }
-            } else {
-                Object[] out = new Object[]{command, commandDelay, blockInputs, blockInputsDelay};
-                if (parseActionLine(line, originalLine, actionList, keybindActions, out)) { command = (String) out[0]; commandDelay = (Long) out[1]; blockInputs = (Boolean) out[2]; blockInputsDelay = (Long) out[3]; }
+            else {
+                Object[] out = new Object[]{command, commandDelay};
+                if (parseActionLine(line, originalLine, actionList, keybindActions, out)) { command = (String) out[0]; commandDelay = (Long) out[1]; }
             }
             i++;
         }
-        if (!command.isEmpty() || !keybindActions.isEmpty() || !actionList.isEmpty()) eqPestCdTriggers.add(new PestCdTrigger(command, commandDelay, keybindActions, blockInputs, blockInputsDelay, blockedCommands, actionList));
+        if (!command.isEmpty() || !keybindActions.isEmpty() || !actionList.isEmpty()) eqPestCdTriggers.add(new PestCdTrigger(command, commandDelay, keybindActions, actionList));
         return i;
     }
 
@@ -1258,24 +1278,19 @@ public class TaunCore implements ClientModInitializer {
         String command = ""; long commandDelay = 0;
         List<ChatTrigger.KeybindAction> keybindActions = new ArrayList<>();
         List<ChatTrigger.TriggerAction> actionList = new ArrayList<>();
-        boolean blockInputs = false; long blockInputsDelay = 0;
-        List<ChatTrigger.BlockedCommand> blockedCommands = new ArrayList<>();
         int i = startIndex + 1;
         while (i < lines.size()) {
             String originalLine = lines.get(i).trim(); String line = originalLine;
             for (Map.Entry<String, String> var : variables.entrySet()) line = line.replace(var.getKey(), var.getValue());
             if (line.isEmpty() || line.startsWith("TRIGGER:") || line.startsWith("PestCD:") || line.startsWith("EQPestCD:") || line.startsWith("EQPestCDWD:") || line.startsWith("EQPestCDFIN:") || line.startsWith("#") || line.startsWith("@")) break;
             if (line.startsWith("DELAY:")) { commandDelay = parseTime(line.substring("DELAY:".length()).trim()); }
-            else if (line.startsWith("BLOCK:")) {
-                String[] parts = line.substring("BLOCK:".length()).trim().split("\\s+for\\s+", 2);
-                if (parts.length == 2) { String cmd = parts[0].trim(); if (cmd.startsWith("/")) cmd = cmd.substring(1); blockedCommands.add(new ChatTrigger.BlockedCommand(cmd, (int)(parseTime(parts[1].trim()) / 1000))); }
-            } else {
-                Object[] out = new Object[]{command, commandDelay, blockInputs, blockInputsDelay};
-                if (parseActionLine(line, originalLine, actionList, keybindActions, out)) { command = (String) out[0]; commandDelay = (Long) out[1]; blockInputs = (Boolean) out[2]; blockInputsDelay = (Long) out[3]; }
+            else {
+                Object[] out = new Object[]{command, commandDelay};
+                if (parseActionLine(line, originalLine, actionList, keybindActions, out)) { command = (String) out[0]; commandDelay = (Long) out[1]; }
             }
             i++;
         }
-        if (!command.isEmpty() || !keybindActions.isEmpty() || !actionList.isEmpty()) eqPestCdWdTriggers.add(new PestCdTrigger(command, commandDelay, keybindActions, blockInputs, blockInputsDelay, blockedCommands, actionList));
+        if (!command.isEmpty() || !keybindActions.isEmpty() || !actionList.isEmpty()) eqPestCdWdTriggers.add(new PestCdTrigger(command, commandDelay, keybindActions, actionList));
         return i;
     }
 
@@ -1285,24 +1300,19 @@ public class TaunCore implements ClientModInitializer {
         String command = ""; long commandDelay = 0;
         List<ChatTrigger.KeybindAction> keybindActions = new ArrayList<>();
         List<ChatTrigger.TriggerAction> actionList = new ArrayList<>();
-        boolean blockInputs = false; long blockInputsDelay = 0;
-        List<ChatTrigger.BlockedCommand> blockedCommands = new ArrayList<>();
         int i = startIndex + 1;
         while (i < lines.size()) {
             String originalLine = lines.get(i).trim(); String line = originalLine;
             for (Map.Entry<String, String> var : variables.entrySet()) line = line.replace(var.getKey(), var.getValue());
             if (line.isEmpty() || line.startsWith("TRIGGER:") || line.startsWith("PestCD:") || line.matches("PestAlive\\d+:.*") || line.startsWith("#") || line.startsWith("@")) break;
             if (line.startsWith("DELAY:")) { commandDelay = parseTime(line.substring("DELAY:".length()).trim()); }
-            else if (line.startsWith("BLOCK:")) {
-                String[] parts = line.substring("BLOCK:".length()).trim().split("\\s+for\\s+", 2);
-                if (parts.length == 2) { String cmd = parts[0].trim(); if (cmd.startsWith("/")) cmd = cmd.substring(1); blockedCommands.add(new ChatTrigger.BlockedCommand(cmd, (int)(parseTime(parts[1].trim()) / 1000))); }
-            } else {
-                Object[] out = new Object[]{command, commandDelay, blockInputs, blockInputsDelay};
-                if (parseActionLine(line, originalLine, actionList, keybindActions, out)) { command = (String) out[0]; commandDelay = (Long) out[1]; blockInputs = (Boolean) out[2]; blockInputsDelay = (Long) out[3]; }
+            else {
+                Object[] out = new Object[]{command, commandDelay};
+                if (parseActionLine(line, originalLine, actionList, keybindActions, out)) { command = (String) out[0]; commandDelay = (Long) out[1]; }
             }
             i++;
         }
-        if (!command.isEmpty() || !keybindActions.isEmpty()) pestAliveTriggers.add(new PestAliveTrigger(threshold, command, commandDelay, keybindActions, blockInputs, blockInputsDelay, blockedCommands, actionList));
+        if (!command.isEmpty() || !keybindActions.isEmpty()) pestAliveTriggers.add(new PestAliveTrigger(threshold, command, commandDelay, keybindActions, actionList));
         return i;
     }
 
@@ -1332,23 +1342,6 @@ public class TaunCore implements ClientModInitializer {
 
     private static int parseOldFormatTrigger(List<String> lines, int index, String line) {
         try {
-            boolean blockInputs = false;
-            if (line.toLowerCase().startsWith("blockinputs:")) { blockInputs = true; line = line.substring("blockinputs:".length()).trim(); }
-            List<ChatTrigger.BlockedCommand> blockedCommands = new ArrayList<>();
-            if (line.toLowerCase().startsWith("blockcommand ")) {
-                String[] blockParts = line.substring("blockcommand ".length()).split(":", 2);
-                if (blockParts.length == 2) {
-                    String[] dc = blockParts[0].trim().split("\\s+", 2);
-                    if (dc.length == 2) {
-                        try {
-                            int dur = Integer.parseInt(dc[0].trim());
-                            String cmd = dc[1].trim(); if (cmd.startsWith("/")) cmd = cmd.substring(1);
-                            blockedCommands.add(new ChatTrigger.BlockedCommand(cmd, dur));
-                            line = blockParts[1].trim();
-                        } catch (NumberFormatException ignored) {}
-                    }
-                }
-            }
             String[] parts = null;
             if (line.contains("=")) parts = line.split("=", 999);
             else if (line.contains("->")) parts = line.split("->", 4);
@@ -1364,7 +1357,7 @@ public class TaunCore implements ClientModInitializer {
                     String[] delayKey = part.split("\\s+", 2);
                     if (delayKey.length == 2) { try { keybindActions.add(new ChatTrigger.KeybindAction(Long.parseLong(delayKey[0].trim()), delayKey[1].trim())); } catch (NumberFormatException ignored) {} }
                 }
-                if (!keybindActions.isEmpty()) { try { triggers.add(new ChatTrigger(triggerText, "", 0, keybindActions, blockInputs, 0, blockedCommands)); } catch (IllegalArgumentException ignored) {} }
+                try { triggers.add(new ChatTrigger(triggerText, "", 0, keybindActions)); } catch (IllegalArgumentException ignored) {}
                 return index + 1;
             }
             String command = ""; long delayMs = 0; String keybind = null; long keybindDelayMs = 100;
@@ -1378,7 +1371,8 @@ public class TaunCore implements ClientModInitializer {
                         String[] delayKey = allParts[j].trim().split("\\s+", 2);
                         if (delayKey.length == 2) { try { keybindActions.add(new ChatTrigger.KeybindAction(Long.parseLong(delayKey[0].trim()), delayKey[1].trim())); } catch (NumberFormatException ignored) {} }
                     }
-                    if (!keybindActions.isEmpty()) { try { triggers.add(new ChatTrigger(triggerText, command, delayMs, keybindActions, blockInputs, 0, blockedCommands)); } catch (IllegalArgumentException ignored) {} return index + 1; }
+                    try { triggers.add(new ChatTrigger(triggerText, command, delayMs, keybindActions)); } catch (IllegalArgumentException ignored) {}
+                    return index + 1;
                 } else if (cmdPart.contains("+")) {
                     String[] ck = cmdPart.split("\\+", 2); command = ck[0].trim(); keybind = ck[1].trim();
                 } else {
@@ -1406,7 +1400,7 @@ public class TaunCore implements ClientModInitializer {
             } else if (parts.length == 4) {
                 try { delayMs = Long.parseLong(parts[1].trim()); command = parts[2].trim().replace("\"", ""); keybind = parts[3].trim().replace("\"", ""); } catch (NumberFormatException e) { return index + 1; }
             }
-            try { triggers.add(new ChatTrigger(triggerText, command, delayMs, keybind, keybindDelayMs, blockInputs, 0, blockedCommands)); } catch (IllegalArgumentException ignored) {}
+            try { triggers.add(new ChatTrigger(triggerText, command, delayMs, keybind, keybindDelayMs)); } catch (IllegalArgumentException ignored) {}
             return index + 1;
         } catch (Exception e) { LOGGER.error("Failed to parse old format trigger on line {}", index + 1, e); return index + 1; }
     }
@@ -1442,10 +1436,8 @@ public class TaunCore implements ClientModInitializer {
         }
     }
 
-    private static void executeActionSequence(List<ChatTrigger.TriggerAction> actions, boolean blockInputs, long blockInputsDelay) throws InterruptedException {
+    private static void executeActionSequence(List<ChatTrigger.TriggerAction> actions) throws InterruptedException {
         if (actions.isEmpty()) return;
-        if (blockInputs && blockInputsDelay > 0) Thread.sleep(blockInputsDelay);
-        if (blockInputs) blockingInputs = true;
         try {
             boolean skipToJacobTrue = false;
             boolean skipGuiDueToCropFever = false;
@@ -1474,6 +1466,24 @@ public class TaunCore implements ClientModInitializer {
                         performEqSwap(action.value);
                     }
                     case RODSWAP -> performRodSwap();
+                    case WDSWAP_FF -> performWardrobeSlotSwap(wardrobeFfSlot, "FF");
+                    case WDSWAP_BPC -> performWardrobeSlotSwap(wardrobeBpcSlot, "BPC");
+                    case DROPBOOKS -> {
+                        int dbThresh = 1;
+                        try { dbThresh = Integer.parseInt(action.value.trim()); } catch (NumberFormatException ignored) {}
+                        if (dropBooksEnabled) performDropBooks(dbThresh);
+                    }
+                    case WAITUNTILFARMING -> {
+                        // Wait until isFarming becomes true (up to 5 minutes), then continue
+                        long waitStart = System.currentTimeMillis();
+                        while (!isFarming && System.currentTimeMillis() - waitStart < 5 * 60 * 1000L) {
+                            Thread.sleep(500);
+                        }
+                        if (!isFarming) return; // timed out, abort
+                        // Farming confirmed — announce shutdown is about to happen
+                        MinecraftClient mcWuf = MinecraftClient.getInstance();
+                        mcWuf.execute(() -> { if (mcWuf.player != null) mcWuf.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Shutdown safety, returning to lobby."), false); });
+                    }
                     case IFJACOB_FALSE -> {
                         if (jacobContestActive) {
                             skipToJacobTrue = true; // skip to IFJACOB_TRUE block
@@ -1485,19 +1495,46 @@ public class TaunCore implements ClientModInitializer {
                         }
                         skipToJacobTrue = false; // Jacob IS active, continue
                     }
-                    case WAITFORCHAT -> {
+                    case PRELISTEN -> {
+                        // Arms the chat listener immediately without blocking.
+                        // Any matching message that arrives from this point (even during
+                        // preceding COMMANDs) will be caught by the subsequent WAITFORCHAT.
                         waitForChatPhrase = action.value.toLowerCase();
                         waitForChatMatched = false;
+                        lastWaitForChatMatched = false;
+                    }
+                    case WAITFORCHAT -> {
+                        // value may encode a timeout: "phrase\0timeoutMs"
+                        String wfcPhrase = action.value;
+                        long wfcTimeout = 10 * 60 * 1000L;
+                        int nullIdx = action.value.indexOf('\0');
+                        if (nullIdx >= 0) {
+                            wfcPhrase = action.value.substring(0, nullIdx);
+                            try { wfcTimeout = Long.parseLong(action.value.substring(nullIdx + 1)); } catch (NumberFormatException ignored) {}
+                        }
+                        // If PRELISTEN already armed the listener for this phrase, don't reset it
+                        // (we may have already matched during the commands that ran before us)
+                        if (!wfcPhrase.toLowerCase().equals(waitForChatPhrase)) {
+                            waitForChatPhrase = wfcPhrase.toLowerCase();
+                            waitForChatMatched = false;
+                        }
                         long waitStart = System.currentTimeMillis();
-                        while (!waitForChatMatched && System.currentTimeMillis() - waitStart < 10 * 60 * 1000) {
+                        while (!waitForChatMatched && System.currentTimeMillis() - waitStart < wfcTimeout) {
                             Thread.sleep(200);
                         }
+                        lastWaitForChatMatched = waitForChatMatched;
                         waitForChatPhrase = null;
                     }
                     case WAITFORJACOBTIMER -> {
                         int threshold = 5;
                         try { threshold = Integer.parseInt(action.value); } catch (NumberFormatException ignored) {}
+                        if (jacobContestActive && jacobTimerSeconds > threshold) {
+                            final int thresh = threshold;
+                            MinecraftClient mc2 = MinecraftClient.getInstance();
+                            mc2.execute(() -> { if (mc2.player != null) mc2.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Waiting for Jacob's event to hit §e<" + thresh + "s§7..."), false); });
+                        }
                         while (jacobContestActive && jacobTimerSeconds > threshold) {
+                            if (!isFarming) return; // user stopped the script manually, abort shutdown sequence
                             Thread.sleep(500);
                         }
                     }
@@ -1507,12 +1544,45 @@ public class TaunCore implements ClientModInitializer {
                     case RETRYUNTILSKYBLOCK -> {
                         MinecraftClient mc = MinecraftClient.getInstance();
                         boolean inSkyblock = false;
+                        // Wait for /lobby to actually send us away before checking
+                        Thread.sleep(action.delayMs > 0 ? action.delayMs : 8000);
                         for (int attempt = 1; attempt <= 10 && !inSkyblock; attempt++) {
+                            // Check if already in SkyBlock before sending /skyblock again
+                            java.util.concurrent.atomic.AtomicBoolean alreadyInSb = new java.util.concurrent.atomic.AtomicBoolean(false);
+                            java.util.concurrent.CountDownLatch sbCheckLatch = new java.util.concurrent.CountDownLatch(1);
+                            mc.execute(() -> {
+                                try {
+                                    if (mc.player != null && mc.world != null) {
+                                        // Check scoreboard sidebar — SkyBlock always has "SKYBLOCK" in the objective display name
+                                        var scoreboard = mc.world.getScoreboard();
+                                        var sidebar = scoreboard.getObjectiveForSlot(net.minecraft.scoreboard.ScoreboardDisplaySlot.SIDEBAR);
+                                        if (sidebar != null && sidebar.getDisplayName().getString().toUpperCase().contains("SKYBLOCK")) {
+                                            alreadyInSb.set(true);
+                                        }
+                                        // Fallback: check tablist for "skyblock" in any entry
+                                        if (!alreadyInSb.get() && mc.player.networkHandler != null) {
+                                            for (var e : mc.player.networkHandler.getPlayerList()) {
+                                                if (e.getDisplayName() == null) continue;
+                                                if (e.getDisplayName().getString().toLowerCase().contains("skyblock")) {
+                                                    alreadyInSb.set(true);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } finally { sbCheckLatch.countDown(); }
+                            });
+                            sbCheckLatch.await();
+                            if (alreadyInSb.get()) {
+                                LOGGER.info("[ShutdownSafety] Already in SkyBlock, done");
+                                inSkyblock = true;
+                                break;
+                            }
                             // Send /skyblock
                             mc.execute(() -> { if (mc.player != null) mc.player.networkHandler.sendChatCommand("skyblock"); });
                             LOGGER.info("[ShutdownSafety] /skyblock attempt {}/10", attempt);
                             // Wait up to 20s for world change (player goes null then comes back)
-                            long deadline = System.currentTimeMillis() + 20_000;
+                            long deadline = System.currentTimeMillis() + 10_000;
                             // Wait for player to go null (leaving lobby)
                             while (mc.player != null && System.currentTimeMillis() < deadline) Thread.sleep(300);
                             if (mc.player == null) {
@@ -1527,13 +1597,221 @@ public class TaunCore implements ClientModInitializer {
                         if (!inSkyblock) LOGGER.warn("[ShutdownSafety] Failed to join SkyBlock after 10 attempts");
                     }
                     case WAITONGUIOPEN -> {
-                        if (!skipGuiDueToCropFever) {
-                            try { waitForGuiOpenThenClose(action.delayMs); } catch (GuiOpenTimeoutException e) { return; }
+                        boolean conditioned = "ifmatched".equals(action.value);
+                        if (!conditioned || lastWaitForChatMatched) {
+                            if (!skipGuiDueToCropFever) {
+                                try { waitForGuiOpenThenClose(action.delayMs); } catch (GuiOpenTimeoutException e) { return; }
+                            }
                         }
                     }
                 }
             }
-        } finally { blockingInputs = false; }
+        } catch (InterruptedException e) { throw e; } // rethrow so callers handle it
+    }
+
+    /**
+     * Opens /wardrobe, clicks the button for the given slot number, then closes the GUI.
+     * Detects the slot button by searching for "Slot X:" in the item display name.
+     * @param slotNumber  1-based wardrobe slot number (1-9)
+     * @param label       human-readable label for log/chat messages
+     */
+    // Matches both roman numeral and numeric forms (some mods convert VI->6, I->1)
+    private static boolean matchesDropBook(String text) {
+        // Sunder VI / Sunder 6 — also handle no-space like "sunder6"
+        boolean isSunder = text.contains("sunder vi") || text.contains("sunder 6") || text.contains("sunder6");
+        // Pesterminator I / Pesterminator 1 — also handle no-space and bare "pesterminator" (lore-only match)
+        // Use word-boundary-style check: "pesterminator" followed by end, space, or digit/roman
+        boolean isPesterminator = text.contains("pesterminator 1") || text.contains("pesterminator1") ||
+            java.util.regex.Pattern.compile("pesterminator(?:\\s+i|\\s*1|\\s*$)").matcher(text).find();
+        return isSunder || isPesterminator;
+    }
+
+    private static String stripCodes(String s) {
+        return s.replaceAll("[\u00a7§][0-9a-fk-orA-FK-OR]", "").toLowerCase().trim();
+    }
+
+    /** Returns a combined searchable string: item name + all lore lines (covers enchanted books where enchant name is in lore) */
+    private static String getCleanItemText(net.minecraft.item.ItemStack stack) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(stripCodes(stack.getName().getString()));
+        var lore = stack.get(net.minecraft.component.DataComponentTypes.LORE);
+        if (lore != null) {
+            for (net.minecraft.text.Text line : lore.lines()) {
+                sb.append(" ").append(stripCodes(line.getString()));
+            }
+        }
+        return sb.toString();
+    }
+
+    private static void performDropBooks(int threshold) throws InterruptedException {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.player == null) return;
+
+        // Find matching books in inventory (slots 0-35)
+        java.util.List<Integer> bookSlots = new ArrayList<>();
+        int totalCount = 0;
+        for (int i = 0; i < 36; i++) {
+            var stack = mc.player.getInventory().getStack(i);
+            if (stack.isEmpty()) continue;
+            String name = getCleanItemText(stack);
+            boolean matches = matchesDropBook(name);
+            if (matches) { bookSlots.add(i); totalCount += stack.getCount(); }
+        }
+
+        final int finalCount = totalCount;
+        if (finalCount < threshold) {
+            if (debugEnabled) mc.execute(() -> { if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[DropBooks] Only " + finalCount + "/" + threshold + " books, skipping"), false); });
+            return;
+        }
+
+        if (debugEnabled) mc.execute(() -> { if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[DropBooks] Found " + finalCount + " book(s), initiating flight + drop"), false); });
+
+        // Check if already flying
+        java.util.concurrent.atomic.AtomicBoolean alreadyFlying = new java.util.concurrent.atomic.AtomicBoolean(false);
+        java.util.concurrent.CountDownLatch flyCheckLatch = new java.util.concurrent.CountDownLatch(1);
+        mc.execute(() -> {
+            try { if (mc.player != null) alreadyFlying.set(mc.player.getAbilities().flying); }
+            finally { flyCheckLatch.countDown(); }
+        });
+        flyCheckLatch.await();
+
+        if (!alreadyFlying.get()) {
+            // Double-tap space to initiate flight
+            pressKey("space", "space");
+            Thread.sleep(100);
+            pressKey("space", "space");
+            Thread.sleep(400);
+        }
+
+        // Hold space for 1 second to gain altitude / stay airborne
+        holdKey("space", "space");
+        Thread.sleep(1000);
+        unholdKey("space", "space");
+        Thread.sleep(150);
+
+        // Open inventory so THROW packets are legitimate
+        pressKey("inventory", "inventory");
+        long invDeadline = System.currentTimeMillis() + 3000;
+        while (mc.currentScreen == null && System.currentTimeMillis() < invDeadline) Thread.sleep(50);
+        if (mc.currentScreen == null) {
+            LOGGER.warn("[DropBooks] Inventory did not open, aborting drop");
+            return;
+        }
+        Thread.sleep(150); // let slots populate
+
+        // Drop each matching book stack using THROW (button=1 = whole stack)
+        // PlayerScreenHandler slot mapping: hotbar 0-8 -> GUI slots 36-44, main inv 9-35 -> GUI slots 9-35
+        for (int invSlot : bookSlots) {
+            final int guiSlot = (invSlot < 9) ? (invSlot + 36) : invSlot;
+            java.util.concurrent.CountDownLatch dropLatch = new java.util.concurrent.CountDownLatch(1);
+            mc.execute(() -> {
+                try {
+                    if (mc.player != null && mc.currentScreen != null)
+                        mc.interactionManager.clickSlot(
+                            mc.player.currentScreenHandler.syncId,
+                            guiSlot, 1, // button=1 = drop whole stack
+                            net.minecraft.screen.slot.SlotActionType.THROW,
+                            mc.player
+                        );
+                } finally { dropLatch.countDown(); }
+            });
+            dropLatch.await();
+            Thread.sleep(guiClickDelayMs);
+        }
+
+        // Close inventory
+        mc.execute(() -> { if (mc.currentScreen != null) mc.player.closeHandledScreen(); });
+        long closeDeadline = System.currentTimeMillis() + 2000;
+        while (mc.currentScreen != null && System.currentTimeMillis() < closeDeadline) Thread.sleep(50);
+        Thread.sleep(100);
+
+        if (debugEnabled) mc.execute(() -> { if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[DropBooks] Dropped " + bookSlots.size() + " book stack(s)"), false); });
+    }
+
+    private static void performWardrobeSlotSwap(int slotNumber, String label) throws InterruptedException {
+        if (slotNumber < 1 || slotNumber > 9) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §cWardrobe slot not configured for " + label + "! Run /pest wardrobe to set it up."), false);
+            return;
+        }
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.player == null) return;
+
+        // Open wardrobe
+        mc.execute(() -> { if (mc.player != null) mc.player.networkHandler.sendChatCommand("wd"); });
+
+        // Wait for GUI to open (up to 5s)
+        long deadline = System.currentTimeMillis() + 5000;
+        while (mc.currentScreen == null && System.currentTimeMillis() < deadline) Thread.sleep(50);
+        if (mc.currentScreen == null) {
+            LOGGER.warn("[WDSwap] Wardrobe GUI did not open for slot {} ({})", slotNumber, label);
+            return;
+        }
+        Thread.sleep(guiClickDelayMs); // let slots populate
+
+        // Find the slot button by name "Slot X:" — also detect if already equipped
+        final int targetSlot = slotNumber;
+        java.util.concurrent.atomic.AtomicInteger guiSlotIndex = new java.util.concurrent.atomic.AtomicInteger(-1);
+        java.util.concurrent.atomic.AtomicBoolean alreadyEquipped = new java.util.concurrent.atomic.AtomicBoolean(false);
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        mc.execute(() -> {
+            try {
+                if (mc.player.currentScreenHandler != null) {
+                    var slots = mc.player.currentScreenHandler.slots;
+                    for (int i = 0; i < slots.size(); i++) {
+                        var slot = slots.get(i);
+                        if (!slot.hasStack()) continue;
+                        String name = slot.getStack().getName().getString().replaceAll("§.", "");
+                        // Match "Slot X:" or "Slot X " at start of name
+                        if (name.startsWith("Slot " + targetSlot + ":") || name.equals("Slot " + targetSlot)) {
+                            guiSlotIndex.set(i);
+                            // "Slot X: Equipped" appears in the item name when the set is active
+                            // "Slot X: Ready" appears when the set is ready to be equipped
+                            if (name.toLowerCase().contains("equipped")) {
+                                alreadyEquipped.set(true);
+                            }
+                            break;
+                        }
+                    }
+                }
+            } finally { latch.countDown(); }
+        });
+        latch.await();
+
+        if (guiSlotIndex.get() == -1) {
+            LOGGER.warn("[WDSwap] Could not find wardrobe slot {} button in GUI", slotNumber);
+            if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §cCould not find wardrobe Slot " + slotNumber + " in GUI!"), false);
+            mc.execute(() -> { if (mc.currentScreen != null) mc.currentScreen.close(); });
+            return;
+        }
+
+        // If the target slot is already equipped, skip clicking — just close the GUI
+        if (alreadyEquipped.get()) {
+            if (debugEnabled && mc.player != null)
+                mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[WDSwap] Slot " + slotNumber + " (" + label + ") already equipped, skipping click"), false);
+            mc.execute(() -> { if (mc.currentScreen != null) mc.player.closeHandledScreen(); });
+            int closeWait = 0;
+            while (mc.currentScreen != null && closeWait < 2000) { Thread.sleep(50); closeWait += 50; }
+            return;
+        }
+
+        if (debugEnabled && mc.player != null)
+            mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[WDSwap] Clicking slot " + slotNumber + " (" + label + ") at GUI index " + guiSlotIndex.get()), false);
+
+        // Click the slot button
+        final int gs = guiSlotIndex.get();
+        mc.execute(() -> {
+            if (mc.player.currentScreenHandler != null)
+                mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, gs, 0,
+                    net.minecraft.screen.slot.SlotActionType.PICKUP, mc.player);
+        });
+        Thread.sleep(guiClickDelayMs);
+
+        // Close the GUI
+        mc.execute(() -> { if (mc.currentScreen != null) mc.player.closeHandledScreen(); });
+        int closeWait = 0;
+        while (mc.currentScreen != null && closeWait < 2000) { Thread.sleep(50); closeWait += 50; }
+        Thread.sleep(guiClickDelayMs / 4); // small settle delay
     }
 
     private static void performEtherwarp(float warpYaw, float warpPitch, float landPitch) throws InterruptedException {
@@ -1613,7 +1891,7 @@ public class TaunCore implements ClientModInitializer {
                         String cloakKeyword = (jacobActive && zorroEnabled) ? "zorro" : "cloak";
                         for (int idx = 0; idx < slots.size(); idx++) {
                             var slot = slots.get(idx);
-                            if (!slot.hasStack()) continue;
+                            if (idx < 45 || !slot.hasStack()) continue; // only equipment GUI slots
                             String n = slot.getStack().getName().getString().toLowerCase();
                             if (n.contains(cloakKeyword)) { cloakSlot.add(idx); break; }
                         }
@@ -1621,7 +1899,7 @@ public class TaunCore implements ClientModInitializer {
                         if (cloakSlot.isEmpty() && jacobActive && zorroEnabled) {
                             for (int idx = 0; idx < slots.size(); idx++) {
                                 var slot = slots.get(idx);
-                                if (!slot.hasStack()) continue;
+                                if (idx < 45 || !slot.hasStack()) continue; // only equipment GUI slots
                                 String n = slot.getStack().getName().getString().toLowerCase();
                                 if (n.contains("cloak")) { cloakSlot.add(idx); break; }
                             }
@@ -1636,11 +1914,37 @@ public class TaunCore implements ClientModInitializer {
         }
         for (int slotIdx : matchingSlots) {
             final int fs = slotIdx;
+            // Check if this piece is already equipped — if so, skip clicking it
+            java.util.concurrent.atomic.AtomicBoolean alreadyEquipped = new java.util.concurrent.atomic.AtomicBoolean(false);
+            java.util.concurrent.CountDownLatch checkLatch = new java.util.concurrent.CountDownLatch(1);
+            client.execute(() -> {
+                try {
+                    if (client.player.currentScreenHandler != null) {
+                        var slots = client.player.currentScreenHandler.slots;
+                        if (fs < slots.size() && slots.get(fs).hasStack()) {
+                            String itemName = slots.get(fs).getStack().getName().getString().toLowerCase();
+                            // Check player's actual armor slots (36=boots, 37=leggings, 38=chestplate, 39=helmet)
+                            for (int armorSlot = 36; armorSlot <= 39; armorSlot++) {
+                                var armorStack = client.player.getInventory().getStack(armorSlot);
+                                if (!armorStack.isEmpty() && armorStack.getName().getString().toLowerCase().equals(itemName)) {
+                                    alreadyEquipped.set(true);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } finally { checkLatch.countDown(); }
+            });
+            checkLatch.await();
+            if (alreadyEquipped.get()) {
+                if (debugEnabled) client.execute(() -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[EqSwap] Already equipped, skipping slot " + fs), false));
+                continue;
+            }
             client.execute(() -> {
                 if (client.player.currentScreenHandler != null)
                     client.interactionManager.clickSlot(client.player.currentScreenHandler.syncId, fs, 0, net.minecraft.screen.slot.SlotActionType.PICKUP, client.player);
             });
-            Thread.sleep(650);
+            Thread.sleep(guiClickDelayMs); // eq swap delay
         }
         // Close the screen and wait for it to actually close before continuing
         if (client.currentScreen != null) {
@@ -1667,40 +1971,14 @@ public class TaunCore implements ClientModInitializer {
     private static void executeSingleCommand(String command) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
-        if (command.equalsIgnoreCase("unblockcommands")) { blockedCommands.clear(); return; }
-        String check = command.startsWith("/") ? command.substring(1) : command;
-        for (Map.Entry<String, Long> e : blockedCommands.entrySet()) {
-            if ((check.equals(e.getKey()) || check.startsWith(e.getKey() + " ")) && e.getValue() != null && System.currentTimeMillis() < e.getValue()) return;
-        }
         if (command.startsWith("/")) command = command.substring(1);
         final String fc = command;
         if (command.startsWith(".")) client.execute(() -> { try { client.player.networkHandler.sendChatMessage(fc); } catch (Exception e) { LOGGER.error("Failed to send chat: {}", fc, e); } });
         else client.execute(() -> { try { client.player.networkHandler.sendChatCommand(fc); } catch (Exception e) { LOGGER.error("Failed to execute command: {}", fc, e); } });
     }
 
-    private static void activateCommandBlock(String command, int durationSeconds) {
-        if (command.startsWith("/")) command = command.substring(1);
-        blockedCommands.put(command, System.currentTimeMillis() + (durationSeconds * 1000L));
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player != null) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c/" + command + " §7blocked for §e" + durationSeconds + "s"), false);
-    }
 
-    public static boolean isCommandBlocked(String command) {
-        String check = command.startsWith("/") ? command.substring(1) : command;
-        for (Map.Entry<String, Long> e : blockedCommands.entrySet()) {
-            if ((check.equals(e.getKey()) || check.startsWith(e.getKey() + " ")) && e.getValue() != null && System.currentTimeMillis() < e.getValue()) return true;
-        }
-        return false;
-    }
 
-    public static long getCommandBlockTimeRemaining(String command) {
-        String check = command.startsWith("/") ? command.substring(1) : command;
-        for (Map.Entry<String, Long> e : blockedCommands.entrySet()) {
-            if ((check.equals(e.getKey()) || check.startsWith(e.getKey() + " ")) && e.getValue() != null && System.currentTimeMillis() < e.getValue())
-                return (e.getValue() - System.currentTimeMillis()) / 1000;
-        }
-        return 0;
-    }
 
     private static long applyRandomDelay(long baseDelay) {
         if (randomDelayRange <= 0) return baseDelay;
@@ -1715,7 +1993,11 @@ public class TaunCore implements ClientModInitializer {
     }
 
     public static void setRandomDelay(int maxRandomMs) {
-        randomDelayRange = Math.max(0, maxRandomMs);
+        randomDelayRange = Math.min(250, Math.max(0, maxRandomMs));
+        if (maxRandomMs > 250) {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.player != null) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §eValue capped at §a250ms"), false);
+        }
         saveSettings();
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player != null) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Random delay: " + (randomDelayRange == 0 ? "§cDISABLED" : "§a±" + randomDelayRange + "ms")), false);
@@ -2050,7 +2332,6 @@ public class TaunCore implements ClientModInitializer {
         rodswapEnabled = !rodswapEnabled;
         if (rodswapEnabled) {
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §aRodswap: §aENABLED"), false);
-            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §e⚠ MAKE SURE YOU HAVE WARDROBE SWAP DISABLED IN TAUNAHI"), false);
             writePestTriggers("rodswap");
         } else { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §cRodswap: §cDISABLED"), false); writePestTriggers("none"); }
         saveSettings();
@@ -2074,7 +2355,7 @@ public class TaunCore implements ClientModInitializer {
         wardrobeSwapEnabled = !wardrobeSwapEnabled;
         if (wardrobeSwapEnabled) {
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §aWardrobe Swap: §aENABLED"), false);
-            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §e⚠ MAKE SURE TO ENABLE WARDROBE SWAP IN TAUNAHI"), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7⚠ Make sure you have Wardrobe Swap §cDISABLED §7in Taunahi"), false);
             writePestTriggers("wdswap");
         } else { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §cWardrobe Swap: §cDISABLED"), false); writePestTriggers("none"); }
         saveSettings();
@@ -2122,12 +2403,66 @@ public class TaunCore implements ClientModInitializer {
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George slug sell: " + (georgeSlugSellEnabled ? "§aENABLED" : "§cDISABLED")), false);
     }
 
+    public static void setSlugSellThreshold(int n) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        slugSellThreshold = n;
+        saveSettings();
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George slug sell threshold set to §e" + n + " §7slug(s). George sell: §a" + (georgeSlugSellEnabled ? "ENABLED" : "§cDISABLED")), false);
+    }
+
     public static void toggleExtraSell() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
         boosterCookieEnabled = !boosterCookieEnabled;
         saveSettings();
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra sell (overclocker etc): " + (boosterCookieEnabled ? "§aENABLED" : "§cDISABLED")), false);
+    }
+
+    public static void setExtraSellThreshold(int n) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        if (n < 1 || n > 10) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §cInvalid threshold. Must be 1-10."), false); return; }
+        extraSellThreshold = n;
+        if (!boosterCookieEnabled) { boosterCookieEnabled = true; }
+        saveSettings();
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra sell threshold set to §e" + n + " §7item(s). Extra sell: §aENABLED"), false);
+    }
+
+    public static void toggleDropBooks() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        dropBooksEnabled = !dropBooksEnabled;
+        saveSettings(); writePestTriggers(rodswapEnabled ? "rodswap" : wardrobeSwapEnabled ? "wdswap" : "none");
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Drop books (Sunder VI / Pesterminator I): " + (dropBooksEnabled ? "§aENABLED" : "§cDISABLED")), false);
+        if (dropBooksEnabled) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Current threshold: §e" + dropBooksThreshold + " §7book(s)"), false);
+    }
+
+    public static void setDropBooksThreshold(int n) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        if (n < 1 || n > 10) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §cInvalid threshold. Must be 1-10."), false); return; }
+        dropBooksThreshold = n;
+        if (!dropBooksEnabled) dropBooksEnabled = true;
+        saveSettings(); writePestTriggers(rodswapEnabled ? "rodswap" : wardrobeSwapEnabled ? "wdswap" : "none");
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Drop books threshold set to §e" + n + "§7. Drop books: §aENABLED"), false);
+    }
+
+    public static void scanBooksDebug() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7--- Scanning inventory for books ---"), false);
+        int found = 0;
+        for (int i = 0; i < 36; i++) {
+            var stack = client.player.getInventory().getStack(i);
+            if (stack.isEmpty()) continue;
+            String text = getCleanItemText(stack);
+            boolean matches = matchesDropBook(text);
+            if (matches) found++;
+            // Print every slot's full text so user can see exactly what we read
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[" + i + "] " + (matches ? "§a✓ " : "") + text), false);
+        }
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7--- Done. " + found + " matching book(s) found ---"), false);
     }
 
     public static void setRotateSpeed(long ms) {
@@ -2138,6 +2473,24 @@ public class TaunCore implements ClientModInitializer {
         saveSettings();
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Etherwarp rotate speed set to §e" + ms + "ms"), false);
     }
+
+    public static void setGuiClickDelay(long ms) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        if (ms < 100 || ms > 3000) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §cInvalid value. Must be between 100 and 3000ms."), false); return; }
+        guiClickDelayMs = ms;
+        saveSettings();
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7GUI click delay set to §e" + ms + "ms"), false);
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Equipment and Wardrobe swapping at: §e" + ms + "ms §7per click"), false);
+    }
+
+    public static void showGuiClickDelay() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7GUI click delay: §e" + guiClickDelayMs + "ms §8(use /pest guidelay <ms> to change, range 100-3000)"), false);
+    }
+
+    public static long getGuiClickDelayMs() { return guiClickDelayMs; }
 
     public static boolean isRodswapEnabled() { return rodswapEnabled; }
     public static boolean isWardrobeSwapEnabled() { return wardrobeSwapEnabled; }
@@ -2163,7 +2516,11 @@ public class TaunCore implements ClientModInitializer {
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Wardrobe Swap: " + (wardrobeSwapEnabled ? "§aENABLED" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Etherwarp: " + (etherwarpEnabled ? "§aENABLED" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Equipment Swap: " + (eqSwapEnabled ? "§aENABLED" : "§cDISABLED")), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra Sell: " + (boosterCookieEnabled ? "§aENABLED §7(threshold: §e" + extraSellThreshold + "§7)" : "§cDISABLED")), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George Slug Sell: " + (georgeSlugSellEnabled ? "§aENABLED §7(threshold: §e" + slugSellThreshold + "§7)" : "§cDISABLED")), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Drop Books: " + (dropBooksEnabled ? "§aENABLED §7(threshold: §e" + dropBooksThreshold + "§7)" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Rotate Speed: §e" + rotateSpeedMs + "ms"), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7GUI Click Delay: §e" + guiClickDelayMs + "ms"), false);
         }
     }
 
@@ -2276,20 +2633,15 @@ public class TaunCore implements ClientModInitializer {
         new Thread(() -> {
             try {
                 if (!trigger.actions.isEmpty()) {
-                    executeActionSequence(trigger.actions, trigger.blockInputs, trigger.blockInputsDelay);
+                    executeActionSequence(trigger.actions);
                 } else {
                     if (trigger.delayMs > 0) Thread.sleep(trigger.delayMs);
                     if (!trigger.command.isEmpty()) executeCommand(trigger.command);
-                    for (ChatTrigger.BlockedCommand b : trigger.blockedCommands) activateCommandBlock(b.command, b.durationSeconds);
                     if (!trigger.keybindActions.isEmpty()) {
-                        if (trigger.blockInputs && trigger.blockInputsDelay > 0) Thread.sleep(trigger.blockInputsDelay);
-                        if (trigger.blockInputs) blockingInputs = true;
                         for (ChatTrigger.KeybindAction a : trigger.keybindActions) { Thread.sleep(applyRandomDelay(a.delayMs)); pressKey(a.key, a.originalKey); }
-                        if (trigger.blockInputs) { Thread.sleep(50); blockingInputs = false; }
                     }
                 }
-                for (ChatTrigger.BlockedCommand b : trigger.blockedCommands) activateCommandBlock(b.command, b.durationSeconds);
-            } catch (InterruptedException e) { if (trigger.blockInputs) blockingInputs = false; }
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }).start();
     }
 
@@ -2320,20 +2672,15 @@ public class TaunCore implements ClientModInitializer {
         new Thread(() -> {
             try {
                 if (!trigger.actions.isEmpty()) {
-                    executeActionSequence(trigger.actions, trigger.blockInputs, trigger.blockInputsDelay);
+                    executeActionSequence(trigger.actions);
                 } else {
                     if (trigger.delayMs > 0) Thread.sleep(trigger.delayMs);
                     if (!trigger.command.isEmpty()) executeCommand(trigger.command);
-                    for (ChatTrigger.BlockedCommand b : trigger.blockedCommands) activateCommandBlock(b.command, b.durationSeconds);
                     if (!trigger.keybindActions.isEmpty()) {
-                        if (trigger.blockInputs && trigger.blockInputsDelay > 0) Thread.sleep(trigger.blockInputsDelay);
-                        if (trigger.blockInputs) blockingInputs = true;
                         for (ChatTrigger.KeybindAction a : trigger.keybindActions) { Thread.sleep(applyRandomDelay(a.delayMs)); pressKey(a.key, a.originalKey); }
-                        if (trigger.blockInputs) { Thread.sleep(50); blockingInputs = false; }
                     }
                 }
-                for (ChatTrigger.BlockedCommand b : trigger.blockedCommands) activateCommandBlock(b.command, b.durationSeconds);
-            } catch (InterruptedException e) { if (trigger.blockInputs) blockingInputs = false; }
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }).start();
     }
 
@@ -2343,7 +2690,6 @@ public class TaunCore implements ClientModInitializer {
                 int rodSlot = findRodSlotInHotbar(); int farmingSlot = findFarmingToolSlotInHotbar();
                 if (rodSlot == -1 || farmingSlot == -1) return;
                 MinecraftClient mc = MinecraftClient.getInstance();
-                blockingInputs = true;
                 Thread.sleep(250);
                 pressKey(String.valueOf(rodSlot), "@ROD_SLOT");
                 Thread.sleep(125);
@@ -2351,15 +2697,13 @@ public class TaunCore implements ClientModInitializer {
                 Thread.sleep(100);
                 pressKey(String.valueOf(farmingSlot), "@FARMING_TOOL_SLOT");
                 Thread.sleep(50);
-                blockingInputs = false;
-            } catch (InterruptedException e) { blockingInputs = false; }
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }).start();
     }
 
     private static void performRodSwap() throws InterruptedException {
         int rodSlot = findRodSlotInHotbar(); int farmingSlot = findFarmingToolSlotInHotbar();
         if (rodSlot == -1 || farmingSlot == -1) return;
-        blockingInputs = true;
         try {
             Thread.sleep(250);
             pressKey(String.valueOf(rodSlot), "@ROD_SLOT");
@@ -2368,7 +2712,7 @@ public class TaunCore implements ClientModInitializer {
             Thread.sleep(250);
             pressKey(String.valueOf(farmingSlot), "@FARMING_TOOL_SLOT");
             Thread.sleep(200);
-        } finally { blockingInputs = false; }
+        } catch (InterruptedException e) { throw e; }
     }
 
     // ── Abiphone / George sell ────────────────────────────────────────────────
@@ -2734,21 +3078,13 @@ public class TaunCore implements ClientModInitializer {
         private final String command;
         private final long delayMs;
         private final List<KeybindAction> keybindActions;
-        private final boolean blockInputs;
-        private final long blockInputsDelay;
-        private final List<BlockedCommand> blockedCommands;
         private final boolean waitOnGuiClosure;
         private final long waitOnGuiClosureDelay;
         private final boolean waitOnGuiOpen;
         private final long waitOnGuiOpenDelay;
 
-        private static class BlockedCommand {
-            final String command; final int durationSeconds;
-            BlockedCommand(String command, int durationSeconds) { this.command = command; this.durationSeconds = durationSeconds; }
-        }
-
         static class TriggerAction {
-            enum Type { COMMAND, PRESS, HOLD, UNHOLD, ROTATE_TO, ETHERWARP_TO, EQSWAP, RODSWAP, IFJACOB_FALSE, IFJACOB_TRUE, WAITFORCHAT, WAITFORJACOBTIMER, IFCROPFEVER_SKIP_GUI, RETRYUNTILSKYBLOCK, WAITONGUIOPEN }
+            enum Type { COMMAND, PRESS, HOLD, UNHOLD, ROTATE_TO, ETHERWARP_TO, EQSWAP, RODSWAP, IFJACOB_FALSE, IFJACOB_TRUE, PRELISTEN, WAITFORCHAT, WAITFORJACOBTIMER, IFCROPFEVER_SKIP_GUI, RETRYUNTILSKYBLOCK, WAITONGUIOPEN, WDSWAP_FF, WDSWAP_BPC, DROPBOOKS, WAITUNTILFARMING }
             final Type type; final String value; final String originalKey; final long delayMs;
             final float yawMin, yawMax, pitchMin, pitchMax, landPitchMin, landPitchMax; final long rotateDurationMs;
             TriggerAction(Type type, String value, String originalKey, long delayMs) { this.type = type; this.value = value; this.originalKey = originalKey; this.delayMs = delayMs; yawMin = yawMax = pitchMin = pitchMax = landPitchMin = landPitchMax = 0; rotateDurationMs = 0; }
@@ -2765,31 +3101,26 @@ public class TaunCore implements ClientModInitializer {
             KeybindAction(long delayMs, String key, String originalKey) { this.delayMs = delayMs; this.key = key; this.originalKey = originalKey; }
         }
 
-        public ChatTrigger(String triggerText, String command) { this(triggerText, command, 0, new ArrayList<>(), false, 0, new ArrayList<>()); }
-        public ChatTrigger(String triggerText, String command, long delayMs) { this(triggerText, command, delayMs, new ArrayList<>(), false, 0, new ArrayList<>()); }
-        public ChatTrigger(String triggerText, String command, long delayMs, String keybind) { this(triggerText, command, delayMs, keybind, 100, false, 0, new ArrayList<>()); }
-        public ChatTrigger(String triggerText, String command, long delayMs, String keybind, long keybindDelayMs) { this(triggerText, command, delayMs, keybind, keybindDelayMs, false, 0, new ArrayList<>()); }
-        public ChatTrigger(String triggerText, String command, long delayMs, String keybind, long keybindDelayMs, boolean blockInputs) { this(triggerText, command, delayMs, keybind, keybindDelayMs, blockInputs, 0, new ArrayList<>()); }
-        public ChatTrigger(String triggerText, String command, long delayMs, String keybind, long keybindDelayMs, boolean blockInputs, long blockInputsDelay) { this(triggerText, command, delayMs, keybind, keybindDelayMs, blockInputs, blockInputsDelay, new ArrayList<>()); }
-        public ChatTrigger(String triggerText, String command, long delayMs, String keybind, long keybindDelayMs, boolean blockInputs, long blockInputsDelay, List<BlockedCommand> blockedCommands) {
+        public ChatTrigger(String triggerText, String command) { this(triggerText, command, 0, new ArrayList<>()); }
+        public ChatTrigger(String triggerText, String command, long delayMs) { this(triggerText, command, delayMs, new ArrayList<>()); }
+        public ChatTrigger(String triggerText, String command, long delayMs, String keybind) { this(triggerText, command, delayMs, keybind, 100); }
+        public ChatTrigger(String triggerText, String command, long delayMs, String keybind, long keybindDelayMs) {
             if (triggerText == null || triggerText.trim().isEmpty()) throw new IllegalArgumentException("Trigger text cannot be empty");
             this.originalTriggerText = triggerText; this.triggerText = triggerText.toLowerCase(); this.groupKey = triggerText.toLowerCase(); this.command = command; this.delayMs = delayMs;
-            this.blockInputs = blockInputs; this.blockInputsDelay = blockInputsDelay; this.blockedCommands = blockedCommands != null ? blockedCommands : new ArrayList<>();
             this.waitOnGuiClosure = false; this.waitOnGuiClosureDelay = 0; this.waitOnGuiOpen = false; this.waitOnGuiOpenDelay = 0;
             this.keybindActions = new ArrayList<>(); this.actions = new ArrayList<>();
             if (keybind != null && !keybind.isEmpty()) this.keybindActions.add(new KeybindAction(keybindDelayMs, keybind));
         }
-        public ChatTrigger(String triggerText, String command, long delayMs, List<KeybindAction> keybindActions) { this(triggerText, command, delayMs, keybindActions, false, 0, new ArrayList<>()); }
-        public ChatTrigger(String triggerText, String command, long delayMs, List<KeybindAction> keybindActions, boolean blockInputs) { this(triggerText, command, delayMs, keybindActions, blockInputs, 0, new ArrayList<>()); }
-        public ChatTrigger(String triggerText, String command, long delayMs, List<KeybindAction> keybindActions, boolean blockInputs, long blockInputsDelay, List<BlockedCommand> blockedCommands) { this(triggerText, command, delayMs, keybindActions, blockInputs, blockInputsDelay, blockedCommands, false, 0); }
-        public ChatTrigger(String triggerText, String command, long delayMs, List<KeybindAction> keybindActions, boolean blockInputs, long blockInputsDelay, List<BlockedCommand> blockedCommands, boolean waitOnGuiClosure, long waitOnGuiClosureDelay) { this(triggerText, command, delayMs, keybindActions, blockInputs, blockInputsDelay, blockedCommands, waitOnGuiClosure, waitOnGuiClosureDelay, false, 0); }
-        public ChatTrigger(String triggerText, String command, long delayMs, List<KeybindAction> keybindActions, boolean blockInputs, long blockInputsDelay, List<BlockedCommand> blockedCommands, boolean waitOnGuiClosure, long waitOnGuiClosureDelay, boolean waitOnGuiOpen) { this(triggerText, command, delayMs, keybindActions, blockInputs, blockInputsDelay, blockedCommands, waitOnGuiClosure, waitOnGuiClosureDelay, waitOnGuiOpen, 0); }
-        public ChatTrigger(String triggerText, String command, long delayMs, List<KeybindAction> keybindActions, boolean blockInputs, long blockInputsDelay, List<BlockedCommand> blockedCommands, boolean waitOnGuiClosure, long waitOnGuiClosureDelay, boolean waitOnGuiOpen, long waitOnGuiOpenDelay) { this(triggerText, triggerText, command, delayMs, keybindActions, blockInputs, blockInputsDelay, blockedCommands, waitOnGuiClosure, waitOnGuiClosureDelay, waitOnGuiOpen, waitOnGuiOpenDelay); }
-        public ChatTrigger(String triggerText, String groupKey, String command, long delayMs, List<KeybindAction> keybindActions, boolean blockInputs, long blockInputsDelay, List<BlockedCommand> blockedCommands, boolean waitOnGuiClosure, long waitOnGuiClosureDelay, boolean waitOnGuiOpen, long waitOnGuiOpenDelay) {
+        public ChatTrigger(String triggerText, String command, long delayMs, List<KeybindAction> keybindActions) {
+            this(triggerText, triggerText, command, delayMs, keybindActions, false, 0, false, 0);
+        }
+        public ChatTrigger(String triggerText, String command, long delayMs, List<KeybindAction> keybindActions, boolean waitOnGuiClosure, long waitOnGuiClosureDelay, boolean waitOnGuiOpen, long waitOnGuiOpenDelay) {
+            this(triggerText, triggerText, command, delayMs, keybindActions, waitOnGuiClosure, waitOnGuiClosureDelay, waitOnGuiOpen, waitOnGuiOpenDelay);
+        }
+        public ChatTrigger(String triggerText, String groupKey, String command, long delayMs, List<KeybindAction> keybindActions, boolean waitOnGuiClosure, long waitOnGuiClosureDelay, boolean waitOnGuiOpen, long waitOnGuiOpenDelay) {
             if (triggerText == null || triggerText.trim().isEmpty()) throw new IllegalArgumentException("Trigger text cannot be empty");
             this.originalTriggerText = triggerText; this.triggerText = triggerText.toLowerCase(); this.groupKey = (groupKey != null ? groupKey : triggerText).toLowerCase(); this.command = command; this.delayMs = delayMs;
-            this.keybindActions = keybindActions; this.blockInputs = blockInputs; this.blockInputsDelay = blockInputsDelay;
-            this.blockedCommands = blockedCommands != null ? blockedCommands : new ArrayList<>();
+            this.keybindActions = keybindActions;
             this.waitOnGuiClosure = waitOnGuiClosure; this.waitOnGuiClosureDelay = waitOnGuiClosureDelay; this.waitOnGuiOpen = waitOnGuiOpen; this.waitOnGuiOpenDelay = waitOnGuiOpenDelay;
             this.actions = new ArrayList<>();
         }
@@ -2800,10 +3131,6 @@ public class TaunCore implements ClientModInitializer {
         public long getDelayMs() { return delayMs; }
         public List<KeybindAction> getKeybindActions() { return keybindActions; }
         public boolean hasKeybind() { return !keybindActions.isEmpty(); }
-        public boolean shouldBlockInputs() { return blockInputs; }
-        public long getBlockInputsDelay() { return blockInputsDelay; }
-        public List<BlockedCommand> getBlockedCommands() { return blockedCommands; }
-        public boolean hasBlockedCommands() { return !blockedCommands.isEmpty(); }
         public boolean shouldWaitOnGuiClosure() { return waitOnGuiClosure; }
         public long getWaitOnGuiClosureDelay() { return waitOnGuiClosureDelay; }
         public boolean shouldWaitOnGuiOpen() { return waitOnGuiOpen; }
@@ -2813,20 +3140,16 @@ public class TaunCore implements ClientModInitializer {
     }
 
     private static class PestCdTrigger {
-        final String command; final long delayMs; final List<ChatTrigger.KeybindAction> keybindActions;
-        final boolean blockInputs; final long blockInputsDelay; final List<ChatTrigger.BlockedCommand> blockedCommands; final List<ChatTrigger.TriggerAction> actions;
-        PestCdTrigger(String command, long delayMs, List<ChatTrigger.KeybindAction> keybindActions, boolean blockInputs, long blockInputsDelay, List<ChatTrigger.BlockedCommand> blockedCommands, List<ChatTrigger.TriggerAction> actions) {
-            this.command = command; this.delayMs = delayMs; this.keybindActions = keybindActions; this.blockInputs = blockInputs; this.blockInputsDelay = blockInputsDelay;
-            this.blockedCommands = blockedCommands != null ? blockedCommands : new ArrayList<>(); this.actions = actions != null ? actions : new ArrayList<>();
+        final String command; final long delayMs; final List<ChatTrigger.KeybindAction> keybindActions; final List<ChatTrigger.TriggerAction> actions;
+        PestCdTrigger(String command, long delayMs, List<ChatTrigger.KeybindAction> keybindActions, List<ChatTrigger.TriggerAction> actions) {
+            this.command = command; this.delayMs = delayMs; this.keybindActions = keybindActions; this.actions = actions != null ? actions : new ArrayList<>();
         }
     }
 
     private static class PestAliveTrigger {
-        final int threshold; final String command; final long delayMs; final List<ChatTrigger.KeybindAction> keybindActions;
-        final boolean blockInputs; final long blockInputsDelay; final List<ChatTrigger.BlockedCommand> blockedCommands; final List<ChatTrigger.TriggerAction> actions;
-        PestAliveTrigger(int threshold, String command, long delayMs, List<ChatTrigger.KeybindAction> keybindActions, boolean blockInputs, long blockInputsDelay, List<ChatTrigger.BlockedCommand> blockedCommands, List<ChatTrigger.TriggerAction> actions) {
-            this.threshold = threshold; this.command = command; this.delayMs = delayMs; this.keybindActions = keybindActions; this.blockInputs = blockInputs; this.blockInputsDelay = blockInputsDelay;
-            this.blockedCommands = blockedCommands != null ? blockedCommands : new ArrayList<>(); this.actions = actions != null ? actions : new ArrayList<>();
+        final int threshold; final String command; final long delayMs; final List<ChatTrigger.KeybindAction> keybindActions; final List<ChatTrigger.TriggerAction> actions;
+        PestAliveTrigger(int threshold, String command, long delayMs, List<ChatTrigger.KeybindAction> keybindActions, List<ChatTrigger.TriggerAction> actions) {
+            this.threshold = threshold; this.command = command; this.delayMs = delayMs; this.keybindActions = keybindActions; this.actions = actions != null ? actions : new ArrayList<>();
         }
     }
 
@@ -2860,24 +3183,73 @@ public class TaunCore implements ClientModInitializer {
     private static void showSetupStep() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
+        boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
+        int total = isWdswap ? 11 : 9;
+        // threshold sub-steps take priority
+        if ("george".equals(setupData.get("pending_threshold"))) {
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 2b/" + total + "] §7How many slugs before selling? §8(1-10, current: §e" + slugSellThreshold + "§8)"), false);
+            return;
+        }
+        if ("extrasell".equals(setupData.get("pending_threshold"))) {
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 3b/" + total + "] §7Minimum items before selling? §8(1-10, current: §e" + extraSellThreshold + "§8)"), false);
+            return;
+        }
+        if ("dropbooks".equals(setupData.get("pending_threshold"))) {
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 4b/" + total + "] §7Minimum books before dropping? §8(1-10, current: §e" + dropBooksThreshold + "§8)"), false);
+            return;
+        }
         switch (setupStep) {
-            case 0 -> {
-                Map<String, Integer> detected = detectHotbarTools();
-                if (detected.containsKey("rod")) { setupData.put("rod_slot", String.valueOf(detected.get("rod"))); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 1/7] §7Auto-detected §eROD§7 in slot §a" + detected.get("rod") + "§7. Type another slot or §ayes§7 to confirm"), false); }
-                else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 1/7] §7Which slot is your §eROD§7? (1-9)"), false);
+            case 0 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 1/" + total + "] §7Swap method? §e§lrodswap §8/ §e§lwdswap §8/ §e§lnone"), false);
+            case 1 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 2/" + total + "] §7Enable §eGeorge Slug Sell§7? §8(auto-sells slugs to George when full) §ayes §8/ §cno"), false);
+            case 2 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 3/" + total + "] §7Enable §eExtra Sell§7? §8(sells overclockers, mantid claws etc via booster cookie) §ayes §8/ §cno"), false);
+            case 3 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 4/" + total + "] §7Enable §eDrop Books§7? §8(drops Sunder VI / Pesterminator I while flying) §ayes §8/ §cno"), false);
+            case 4 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 5/" + total + "] §7Enable §eEquipment Swap§7? §8(swaps equipment sets at pest cooldown) §ayes §8/ §cno"), false);
+            case 5 -> {
+                if (isWdswap) {
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 6/11] §7Which wardrobe slot is your §eFarming Fortune§7 set on? (1-9)"), false);
+                    if (wardrobeFfSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeFfSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+                } else {
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 6/9] §7What is your §ePlot number§7? (e.g. §a11§7)"), false);
+                }
             }
-            case 1 -> {
-                Map<String, Integer> detected = detectHotbarTools();
-                if (detected.containsKey("farming_tool")) { setupData.put("farming_slot", String.valueOf(detected.get("farming_tool"))); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 2/7] §7Auto-detected §eFARMING TOOL§7 in slot §a" + detected.get("farming_tool") + "§7. Type another slot or §ayes§7 to confirm"), false); }
-                else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 2/7] §7Which slot is your §eFARMING TOOL§7? (1-9)"), false);
+            case 6 -> {
+                if (isWdswap) {
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 7/11] §7Which wardrobe slot is your §eBonus Pest Chance§7 set on? (1-9)"), false);
+                    if (wardrobeBpcSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeBpcSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+                } else {
+                    setupCommandExecuted = false;
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 7/9] §7Go to your §eSpawn §7and run §a/pest setspawn"), false);
+                }
             }
-            case 2 -> {
-                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 3/7] §7Swap method? §e§lrodswap §8/ §e§lwdswap §8/ §e§lnone"), false);
+            case 7 -> {
+                if (isWdswap) {
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 8/11] §7What is your §ePlot number§7? (e.g. §a11§7)"), false);
+                } else {
+                    setupCommandExecuted = false;
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 8/9] §7Move §e3 blocks into the first lane §7and run §a/pest setspawntrigger"), false);
+                }
             }
-            case 3 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 4/7] §7What is your §ePlot number§7? (e.g. §a11§7)"), false);
-            case 4 -> { setupCommandExecuted = false; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 5/7] §7Go to your §eSpawn §7and run §a/pest setspawn"), false); }
-            case 5 -> { setupCommandExecuted = false; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 6/7] §7Go to the §eEnd of your farm §7and run §a/pest setend"), false); }
-            case 6 -> { setupCommandExecuted = false; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 7/7] §7Move §e3 blocks into the first lane §7and run §a/pest setspawntrigger"), false); }
+            case 8 -> {
+                if (isWdswap) {
+                    setupCommandExecuted = false;
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 9/11] §7Go to your §eSpawn §7and run §a/pest setspawn"), false);
+                } else {
+                    setupCommandExecuted = false;
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 9/9] §7Go to the §eEnd of your farm §7and run §a/pest setend"), false);
+                }
+            }
+            case 9 -> {
+                if (isWdswap) {
+                    setupCommandExecuted = false;
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 10/11] §7Move §e3 blocks into the first lane §7and run §a/pest setspawntrigger"), false);
+                }
+            }
+            case 10 -> {
+                if (isWdswap) {
+                    setupCommandExecuted = false;
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 11/11] §7Go to the §eEnd of your farm §7and run §a/pest setend"), false);
+                }
+            }
         }
     }
 
@@ -2887,30 +3259,168 @@ public class TaunCore implements ClientModInitializer {
         if (input.equals("cancel")) { cancelSetup(); return true; }
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return true;
+        boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
+        boolean yes = input.equals("yes") || input.equals("y");
+        boolean no  = input.equals("no")  || input.equals("n");
+
+        // Handle threshold sub-steps
+        String pendingThreshold = setupData.get("pending_threshold");
+        if (pendingThreshold != null) {
+            try {
+                int t = Integer.parseInt(input);
+                if (t < 1 || t > 10) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-10"), false); return true; }
+                switch (pendingThreshold) {
+                    case "george"    -> { slugSellThreshold = t; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Slug threshold: " + t), false); }
+                    case "extrasell" -> { extraSellThreshold = t; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Extra sell threshold: " + t), false); }
+                    case "dropbooks" -> { dropBooksThreshold = t; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Drop books threshold: " + t), false); }
+                }
+                saveSettings();
+                setupData.remove("pending_threshold");
+                setupStep++; showSetupStep();
+            } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-10"), false); }
+            return true;
+        }
+
         switch (setupStep) {
             case 0 -> {
-                if ((input.equals("yes") || input.equals("y")) && setupData.containsKey("rod_slot")) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Rod slot: " + setupData.get("rod_slot")), false); setupStep++; showSetupStep(); }
-                else { try { int s = Integer.parseInt(input); if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; } setupData.put("rod_slot", String.valueOf(s)); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9 or yes/y"), false); } }
-            }
-            case 1 -> {
-                if ((input.equals("yes") || input.equals("y")) && setupData.containsKey("farming_slot")) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Farming slot: " + setupData.get("farming_slot")), false); setupStep++; showSetupStep(); }
-                else { try { int s = Integer.parseInt(input); if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; } setupData.put("farming_slot", String.valueOf(s)); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9 or yes/y"), false); } }
-            }
-            case 2 -> {
                 if (input.equals("rodswap") || input.equals("wdswap") || input.equals("none")) { setupData.put("swap_mode", input); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Swap mode: " + input), false); setupStep++; showSetupStep(); }
                 else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type rodswap, wdswap, or none"), false);
             }
-            case 3 -> {
-                try { int p = Integer.parseInt(input); if (p < 1 || p > 24) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-24"), false); return true; } setupData.put("plot_number", String.valueOf(p)); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Plot: " + p), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a valid number"), false); }
+            case 1 -> {
+                if (yes || no) {
+                    georgeSlugSellEnabled = yes; saveSettings();
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ George Slug Sell: " + (yes ? "§aENABLED" : "§cDISABLED")), false);
+                    if (yes) { setupData.put("pending_threshold", "george"); showSetupStep(); }
+                    else { setupStep++; showSetupStep(); }
+                } else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type yes or no"), false);
             }
-            case 4 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawn"), false);
-            case 5 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setend"), false);
-            case 6 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawntrigger"), false);
+            case 2 -> {
+                if (yes || no) {
+                    boosterCookieEnabled = yes; saveSettings();
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Extra Sell: " + (yes ? "§aENABLED" : "§cDISABLED")), false);
+                    if (yes) { setupData.put("pending_threshold", "extrasell"); showSetupStep(); }
+                    else { setupStep++; showSetupStep(); }
+                } else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type yes or no"), false);
+            }
+            case 3 -> {
+                if (yes || no) {
+                    dropBooksEnabled = yes; saveSettings();
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Drop Books: " + (yes ? "§aENABLED" : "§cDISABLED")), false);
+                    if (yes) { setupData.put("pending_threshold", "dropbooks"); showSetupStep(); }
+                    else { setupStep++; showSetupStep(); }
+                } else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type yes or no"), false);
+            }
+            case 4 -> {
+                if (yes || no) {
+                    eqSwapEnabled = yes; saveSettings();
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Equipment Swap: " + (yes ? "§aENABLED" : "§cDISABLED")), false);
+                    setupStep++; showSetupStep();
+                } else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type yes or no"), false);
+            }
+            case 5 -> {
+                if (isWdswap) {
+                    if (yes && wardrobeFfSlot > 0) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ FF slot kept: " + wardrobeFfSlot), false); setupStep++; showSetupStep(); }
+                    else { try { int s = Integer.parseInt(input); if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; } wardrobeFfSlot = s; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ FF slot: " + s), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9 or yes/y"), false); } }
+                } else {
+                    try { int p = Integer.parseInt(input); if (p < 1 || p > 24) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-24"), false); return true; } setupData.put("plot_number", String.valueOf(p)); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Plot: " + p), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a valid number"), false); }
+                }
+            }
+            case 6 -> {
+                if (isWdswap) {
+                    if (yes && wardrobeBpcSlot > 0) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ BPC slot kept: " + wardrobeBpcSlot), false); setupStep++; showSetupStep(); }
+                    else { try { int s = Integer.parseInt(input); if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; } wardrobeBpcSlot = s; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ BPC slot: " + s), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9 or yes/y"), false); } }
+                } else {
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawn"), false);
+                }
+            }
+            case 7 -> {
+                if (isWdswap) {
+                    try { int p = Integer.parseInt(input); if (p < 1 || p > 24) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-24"), false); return true; } setupData.put("plot_number", String.valueOf(p)); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Plot: " + p), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a valid number"), false); }
+                } else {
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawntrigger"), false);
+                }
+            }
+            case 8 -> {
+                if (isWdswap) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawn"), false); }
+                else { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setend"), false); }
+            }
+            case 9 -> { if (isWdswap) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawntrigger"), false); }
+            case 10 -> { if (isWdswap) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setend"), false); }
         }
         return true;
     }
 
-    /** Builds the ETHERWARP_TO line from saved coords with ±10 offset, pitch clamped to -90. */
+    public static int getWardrobeFfSlot()  { return wardrobeFfSlot; }
+    public static int getWardrobeBpcSlot() { return wardrobeBpcSlot; }
+
+    public static void startWardrobeSetup() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        wardrobeSetupActive = true;
+        wardrobeSetupStep = 0;
+        client.player.sendMessage(Text.literal("§c§lTaun+++ Wardrobe Setup"), false);
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Type answers in chat (won't be sent to server). Type §c'cancel'§7 to exit."), false);
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §e[Step 1/2] §7What wardrobe slot is your §eFarming Fortune§7 set on? (1-9)"), false);
+        if (wardrobeFfSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeFfSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+    }
+
+    public static boolean handleWardrobeSetupInput(String input) {
+        if (!wardrobeSetupActive) return false;
+        input = input.trim().toLowerCase();
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return true;
+        if (input.equals("cancel")) {
+            wardrobeSetupActive = false;
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §cWardrobe setup cancelled."), false);
+            return true;
+        }
+        if (wardrobeSetupStep == 0) {
+            if ((input.equals("yes") || input.equals("y")) && wardrobeFfSlot > 0) {
+                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ FF slot kept: " + wardrobeFfSlot), false);
+                wardrobeSetupStep = 1;
+                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §e[Step 2/2] §7What wardrobe slot is your §eBonus Pest Chance§7 set on? (1-9)"), false);
+                if (wardrobeBpcSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeBpcSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+                return true;
+            }
+            try {
+                int s = Integer.parseInt(input);
+                if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; }
+                wardrobeFfSlot = s;
+                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ FF slot set to: " + s), false);
+                wardrobeSetupStep = 1;
+                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §e[Step 2/2] §7What wardrobe slot is your §eBonus Pest Chance§7 set on? (1-9)"), false);
+                if (wardrobeBpcSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeBpcSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+            } catch (NumberFormatException e) {
+                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9"), false);
+            }
+        } else if (wardrobeSetupStep == 1) {
+            if ((input.equals("yes") || input.equals("y")) && wardrobeBpcSlot > 0) {
+                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ BPC slot kept: " + wardrobeBpcSlot), false);
+                finishWardrobeSetup(client);
+                return true;
+            }
+            try {
+                int s = Integer.parseInt(input);
+                if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; }
+                wardrobeBpcSlot = s;
+                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ BPC slot set to: " + s), false);
+                finishWardrobeSetup(client);
+            } catch (NumberFormatException e) {
+                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9"), false);
+            }
+        }
+        return true;
+    }
+
+    private static void finishWardrobeSetup(MinecraftClient client) {
+        wardrobeSetupActive = false;
+        saveSettings();
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §aWardrobe setup complete!"), false);
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7FF slot: §e" + wardrobeFfSlot + " §7| BPC slot: §e" + wardrobeBpcSlot), false);
+    }
+
+    public static boolean isWardrobeSetupActive() { return wardrobeSetupActive; }
+
     private static String buildEtherwarpLine() {
         float yawMin = etherwarpYaw - 10f;
         float yawMax = etherwarpYaw + 10f;
@@ -2949,26 +3459,33 @@ public class TaunCore implements ClientModInitializer {
     private static void appendVisitorTriggers(StringBuilder t) {
         t.append("\n# visitor support (dont change unless buggy)\n");
         t.append("TRIGGER: \"script stopped. [Visitors]\"\n");
-        t.append("  COMMAND: /setspawn\n").append("  COMMAND: .ez-stopscript after 50ms\n").append("  COMMAND: .ez-startscript misc:visitor after 50ms\n");
+        t.append("  PRELISTEN: \"More slots needed to use the Visitor script\"\n");
+        t.append("  COMMAND: .ez-stopscript\n");
+        t.append("  COMMAND: /setspawn\n");
+        t.append("  WAITFORCHAT: \"More slots needed to use the Visitor script\" timeout 3000ms\n");
+        t.append("  WAITONGUIOPEN ifmatched\n");
+        t.append("  COMMAND: .ez-startscript misc:visitor after 50ms\n");
         t.append("TRIGGER: \"Visitor script stopped. [Finished]\"\n");
-        t.append("  COMMAND: /warp garden\n").append("  COMMAND: .ez-startscript netherwart:1 after 50ms\n");
+        t.append("  COMMAND: /warp garden after 500ms\n").append("  COMMAND: .ez-startscript netherwart:1 after 50ms\n");
     }
 
     private static void appendServerShutdownTrigger(StringBuilder t) {
         t.append("\n# server shutdown safety (dont change unless buggy)\n");
         t.append("TRIGGER: \"server will restart soon\" or \"proxy is\"\n");
         t.append("  IFJACOB=FALSE\n");
+        t.append("    WAITUNTILFARMING\n");
         t.append("    COMMAND: .ez-stopscript\n");
         t.append("    COMMAND: /setspawn\n");
         t.append("    COMMAND: /lobby after 5s\n");
         t.append("    RETRYUNTILSKYBLOCK\n");
         t.append("    COMMAND: .ez-startscript netherwart:1\n");
         t.append("  IFJACOB=TRUE\n");
-        t.append("    WAITFORJACOBTIMER: 15\n");
+        t.append("    WAITFORJACOBTIMER: 30\n");
+        t.append("    WAITUNTILFARMING\n");
         t.append("    COMMAND: .ez-stopscript\n");
         t.append("    COMMAND: /setspawn\n");
-        t.append("    COMMAND: /lobby after 3s\n");
-        t.append("    RETRYUNTILSKYBLOCK\n");
+        t.append("    COMMAND: /lobby after 1s\n");
+        t.append("    RETRYUNTILSKYBLOCK after 25s\n");
         t.append("    COMMAND: .ez-startscript netherwart:1\n");
     }
 
@@ -2980,11 +3497,12 @@ public class TaunCore implements ClientModInitializer {
                     t.append("# rodswap config\n");
                     if (eqSwapEnabled) { t.append("EQPestCD:\n  COMMAND: .ez-stopscript\n  EQSWAP: PEST\n  RODSWAP\n  COMMAND: .ez-startscript netherwart:1 after 50ms\n"); }
                     else { t.append("PestCD:\n  COMMAND: .ez-stopscript\n  RODSWAP\n  COMMAND: .ez-startscript netherwart:1 after 50ms\n"); }
-                    t.append("\nTRIGGER: \"spawned in\"\n  COMMAND: .ez-stopscript after 350ms\n");
-                    if (eqSwapEnabled) t.append("  EQSWAP: BLOSSOM/LOTUS\n");
-                    t.append("  COMMAND: /setspawn\n");
+                    t.append("\nTRIGGER: \"spawned in\" or \"have spawned\"\n  COMMAND: .ez-stopscript after 350ms\n  COMMAND: /setspawn\n");
+                    if (eqSwapEnabled) t.append("  EQSWAP: BLOSSOM/LOTUS after 100ms\n");
                     if (etherwarpEnabled) t.append(buildEtherwarpLine());
-                    t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n  COMMAND: /warp garden\n  HOLD: shift for 350ms\n");
+                    t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n");
+                    if (dropBooksEnabled) t.append("  DROPBOOKS: " + dropBooksThreshold + "\n");
+                    t.append("  COMMAND: /warp garden after 100ms\n  HOLD: shift for 350ms\n");
                     if (!rosedragEnabled) t.append("  RODSWAP\n");
                     t.append("  COMMAND: .ez-startscript netherwart:1 after 100ms\n");
                     appendVisitorTriggers(t);
@@ -2992,22 +3510,26 @@ public class TaunCore implements ClientModInitializer {
                 }
                 case "wdswap" -> {
                     t.append("# wardrobe swap config\n");
-                    if (eqSwapEnabled) t.append("EQPestCDWD:\n  COMMAND: .ez-stopscript\n  EQSWAP: PEST\n  COMMAND: .ez-startscript netherwart:1 after 100ms\n\n");
-                    t.append("TRIGGER: \"spawned in\"\n  WAITFORCHAT: \"script stopped. [Pests]\"\n  COMMAND: /setspawn\n  IFCROPFEVER: SKIP_GUI\n  WAITONGUIOPEN\n  COMMAND: .ez-stopscript\n");
-                    if (eqSwapEnabled) t.append("  EQSWAP: BLOSSOM/LOTUS\n");
+                    if (eqSwapEnabled) t.append("EQPestCD:\n  COMMAND: .ez-stopscript\n  WDSWAP_BPC\n  EQSWAP: PEST\n  COMMAND: .ez-startscript netherwart:1 after 100ms\n\n");
+                    else t.append("PestCD:\n  COMMAND: .ez-stopscript\n  WDSWAP_BPC\n  COMMAND: .ez-startscript netherwart:1 after 100ms\n\n");
+                    t.append("TRIGGER: \"spawned in\" or \"have spawned\"\n  COMMAND: .ez-stopscript\n  COMMAND: /setspawn\n  WDSWAP_FF after 150ms\n");
+                    if (eqSwapEnabled) t.append("  EQSWAP: BLOSSOM/LOTUS after 100ms\n");
                     if (etherwarpEnabled) t.append(buildEtherwarpLine());
-                    t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n  COMMAND: /warp garden\n  HOLD: shift for 350ms\n  COMMAND: .ez-startscript netherwart:1\n");
+                    t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n");
+                    if (dropBooksEnabled) t.append("  DROPBOOKS: " + dropBooksThreshold + "\n");
+                    t.append("  COMMAND: /warp garden after 100ms\n  HOLD: shift for 350ms\n  COMMAND: .ez-startscript netherwart:1\n");
                     appendVisitorTriggers(t);
                     appendServerShutdownTrigger(t);
                 }
                 default -> {
                     t.append("# none config\n");
                     if (eqSwapEnabled) { t.append("EQPestCD:\n  COMMAND: .ez-stopscript\n  EQSWAP: PEST\n  COMMAND: .ez-startscript netherwart:1 after 50ms\n\n"); }
-                    t.append("TRIGGER: \"spawned in\"\n  COMMAND: .ez-stopscript\n");
-                    if (eqSwapEnabled) t.append("  EQSWAP: BLOSSOM/LOTUS\n");
-                    t.append("  COMMAND: /setspawn\n");
+                    t.append("TRIGGER: \"spawned in\" or \"have spawned\"\n  COMMAND: .ez-stopscript\n  COMMAND: /setspawn\n");
+                    if (eqSwapEnabled) t.append("  EQSWAP: BLOSSOM/LOTUS after 100ms\n");
                     if (etherwarpEnabled) t.append(buildEtherwarpLine());
-                    t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n  COMMAND: /warp garden\n  HOLD: shift for 350ms\n  COMMAND: .ez-startscript netherwart:1\n");
+                    t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n");
+                    if (dropBooksEnabled) t.append("  DROPBOOKS: " + dropBooksThreshold + "\n");
+                    t.append("  COMMAND: /warp garden after 100ms\n  HOLD: shift for 350ms\n  COMMAND: .ez-startscript netherwart:1\n");
                     appendVisitorTriggers(t);
                     appendServerShutdownTrigger(t);
                 }
@@ -3037,7 +3559,7 @@ public class TaunCore implements ClientModInitializer {
                 continue;
             }
             boolean isPestBlock = line.startsWith("PestCD:") || line.startsWith("EQPestCD:") || line.startsWith("EQPestCDWD:") || line.startsWith("EQPestCDFIN:") || line.matches("PestAlive\\d+:.*")
-                || (line.startsWith("TRIGGER:") && (line.contains("Pest Cleaner script stopped") || line.contains("Wardrobe Swap script stopped") || line.contains("spawned in") || line.contains("server will restart soon") || line.contains("proxy is")))
+                || (line.startsWith("TRIGGER:") && (line.contains("Pest Cleaner script stopped") || line.contains("Wardrobe Swap script stopped") || line.contains("spawned in") || line.contains("have spawned") || line.contains("server will restart soon") || line.contains("proxy is")))
                 || line.equals("# server shutdown safety (dont change unless buggy)");
             if (isPestBlock) {
                 i++;
@@ -3049,14 +3571,14 @@ public class TaunCore implements ClientModInitializer {
 
     private static void finishSetup() {
         setupWizardActive = false;
+        setupFinishTime = System.currentTimeMillis() + 5000;
         chatTriggersEnabled = true; coordTriggersEnabled = true;
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
         try {
             StringBuilder config = new StringBuilder();
             config.append("# ==========================================\n# TAUN+++ AUTO-GENERATED CONFIG\n# ==========================================\n\n");
-            config.append("# @ROD_SLOT = ").append(setupData.get("rod_slot")).append("\n");
-            config.append("# @FARMING_TOOL_SLOT = ").append(setupData.get("farming_slot")).append("\n");
+            // rod/farming slots removed from setup wizard
             config.append("@GARDEN = /warp garden\n\n# ===== TRIGGERS =====\n");
             Files.writeString(configPath, config.toString());
             String swapMode = setupData.getOrDefault("swap_mode", "none");
@@ -3086,7 +3608,9 @@ public class TaunCore implements ClientModInitializer {
             lines.add(line);
             Files.write(coordConfigPath, lines); loadCoordinateTriggers();
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Added setspawn at " + String.format("%.1f, %.1f, %.1f", x, y, z)), false);
-            if (setupWizardActive && setupStep == 4) { setupStep++; showSetupStep(); }
+            boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
+            int spawnStep = isWdswap ? 8 : 6;
+            if (setupWizardActive && setupStep == spawnStep) { setupStep++; showSetupStep(); }
         } catch (IOException e) { LOGGER.error("Failed to save setspawn", e); }
     }
 
@@ -3102,7 +3626,9 @@ public class TaunCore implements ClientModInitializer {
             lines.add(String.format(Locale.US, "%.2f,%.2f,%.2f,1.00 = .ez-stopscript", x, y, z));
             Files.write(coordConfigPath, lines); loadCoordinateTriggers();
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Added setend at " + String.format("%.1f, %.1f, %.1f", x, y, z)), false);
-            if (setupWizardActive && setupStep == 5) { setupStep++; showSetupStep(); }
+            boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
+            int endStep = isWdswap ? 10 : 8;
+            if (setupWizardActive && setupStep == endStep) finishSetup();
         } catch (IOException e) { LOGGER.error("Failed to save setend", e); }
     }
 
@@ -3115,7 +3641,9 @@ public class TaunCore implements ClientModInitializer {
             lines.add(String.format(Locale.US, "%.2f,%.2f,%.2f,1.00 = /setspawn", x, y, z));
             Files.write(coordConfigPath, lines); loadCoordinateTriggers();
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Added spawn trigger at " + String.format("%.1f, %.1f, %.1f", x, y, z)), false);
-            if (setupWizardActive && setupStep == 6) finishSetup();
+            boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
+            int triggerStep = isWdswap ? 9 : 7;
+            if (setupWizardActive && setupStep == triggerStep) { setupStep++; showSetupStep(); }
         } catch (IOException e) { LOGGER.error("Failed to save spawn trigger", e); }
     }
 
@@ -3173,17 +3701,43 @@ public class TaunCore implements ClientModInitializer {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
         client.player.sendMessage(Text.literal("§c§l========= Taun+++ Commands ========="), false);
-        client.player.sendMessage(Text.literal("§e/pest setup / setspawn / setend / setspawntrigger"), false);
-        client.player.sendMessage(Text.literal("§e/pest rodswap / wdswap / etherwarp / eqswap"), false);
-        client.player.sendMessage(Text.literal("§e/pest toggle chat / coords / all"), false);
-        client.player.sendMessage(Text.literal("§e/pest dynarest §8— toggle on/off"), false);
-        client.player.sendMessage(Text.literal("§e/pest dynarest <time> §8— set farm time (e.g. 2h, 90m)"), false);
-        client.player.sendMessage(Text.literal("§e/pest dynarest breaktime <m> / scriptoffset <m> / status"), false);
-        client.player.sendMessage(Text.literal("§e/pest abiphoneslot <1-9>   §7Set Abiphone hotbar slot (George sell)"), false);
-        client.player.sendMessage(Text.literal("§e/pest georgesell   §7Toggle George slug auto-sell on/off"), false);
-        client.player.sendMessage(Text.literal("§e/pest extrasell   §7Toggle overclocker/extra item sell via booster cookie GUI"), false);
-        client.player.sendMessage(Text.literal("§e/pest random <ms> §8— add ±<ms> runtime variance to all delays (0 to disable)"), false);
-        client.player.sendMessage(Text.literal("§e/pest reload / detect / files / debug / help"), false);
+
+        // --- Setup ---
+        client.player.sendMessage(Text.literal("§c§l--- Setup ---"), false);
+        client.player.sendMessage(Text.literal("§e/pest setup §7/ §esetspawn §7/ §esetend §7/ §esetspawntrigger"), false);
+        client.player.sendMessage(Text.literal("§c» MAKE SURE TO CHECK THE GITHUB FOR THE SETUP VIDEO"), false);
+
+        // --- Swap Modes ---
+        client.player.sendMessage(Text.literal("§c§l--- Swap Modes ---"), false);
+        client.player.sendMessage(Text.literal("§e/pest rodswap §7/ §ewdswap §7/ §eetherwarp §7/ §eeqswap"), false);
+        client.player.sendMessage(Text.literal("§e/pest rodswap rosedrag §7— toggles rodswap compatibility for rosedrag rules"), false);
+        client.player.sendMessage(Text.literal("§e/pest wardrobe §7— set your 2 armor set wardrobe slots §c(REQUIRED FOR WARDROBE SWAP)"), false);
+        client.player.sendMessage(Text.literal("§e/pest setetherwarp §7— customize where you etherwarp to / where your glass is"), false);
+        client.player.sendMessage(Text.literal("§e/pest eqswap zorro §7— toggles zorro cape during jacobs event"), false);
+        client.player.sendMessage(Text.literal("§c» MAKE SURE JACOBS EVENT HAS ENOUGH PRIORITY IN TABLIST"), false);
+
+        // --- Triggers ---
+        client.player.sendMessage(Text.literal("§c§l--- Triggers ---"), false);
+        client.player.sendMessage(Text.literal("§e/pest toggle §7— toggle all triggers on/off  §8|  §e/pest toggle chat §7/ §ecoords §7— toggle individually"), false);
+        client.player.sendMessage(Text.literal("§e/pest status §7— show current status of all features"), false);
+
+        // --- Dynamic Rest ---
+        client.player.sendMessage(Text.literal("§c§l--- Dynamic Rest ---"), false);
+        client.player.sendMessage(Text.literal("§e/pest dynarest §7— toggle on or off"), false);
+        client.player.sendMessage(Text.literal("§e/pest dynarest time §7— set dynamic rest time §f(e.g. 2h, 2.5h, 90m)"), false);
+        client.player.sendMessage(Text.literal("§e/pest dynarest breaktime <minutes> §7— how long before reconnecting"), false);
+        client.player.sendMessage(Text.literal("§e/pest dynarest scriptoffset <minutes> §7— adds randomness"), false);
+        client.player.sendMessage(Text.literal("§e/pest dynarest status §7— check current settings and next disconnect"), false);
+
+        // --- Utilities ---
+        client.player.sendMessage(Text.literal("§c§l--- Utilities ---"), false);
+        client.player.sendMessage(Text.literal("§e/pest georgesell §7— toggle George slug auto-sell on/off  §8|  §e/pest georgesell <1-10> §7— set slug threshold"), false);
+        client.player.sendMessage(Text.literal("§e/pest extrasell §e<1-10> §7— toggle selling extra items via booster cookie menu"), false);
+        client.player.sendMessage(Text.literal("§e/pest dropbooks §e<1-10> §7— toggle dropping Sunder VI / Pesterminator I books when found"), false);
+        client.player.sendMessage(Text.literal("§e/pest random §70-250ms — randomize all delays in triggers.txt by \u00b1<ms>"), false);
+        client.player.sendMessage(Text.literal("§e/pest guidelay §7— change the equipping delay §c(useful for high ping users)"), false);
+        client.player.sendMessage(Text.literal("§e/pest reload §7/ §edetect §7/ §efiles §7/ §edebug §7/ §ehelp"), false);
+
         client.player.sendMessage(Text.literal("§c§l====================================="), false);
     }
 
@@ -3257,4 +3811,5 @@ public class TaunCore implements ClientModInitializer {
         client.player.sendMessage(Text.literal(tools.containsKey("abiphone") ? "§c§lTaun+++ >> §a✓ Abiphone: §7Slot " + tools.get("abiphone") + (abiphoneSlot > 0 ? " §7(pinned to slot " + abiphoneSlot + ")" : " §7(auto-detected)") : "§c§lTaun+++ >> §c✗ Abiphone: §7Not found"), false);
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7§o@ROD_SLOT and @FARMING_TOOL_SLOT are resolved dynamically."), false);
     }
+
 }

@@ -2,11 +2,7 @@
   "required": true,
   "package": "com.taun.mixin",
   "compatibilityLevel": "JAVA_21",
-  "client": [
-    "SafeInputBlocker",
-    "CommandBlockerMixin",
-    "PacketDebuggerMixin"
-  ],
+  "client": [],
   "injectors": {
     "defaultRequire": 1
   }

@@ -16,16 +16,18 @@ public class TaunCommand {
                     .then(ClientCommandManager.literal("reload")
                         .executes(ctx -> { TaunCore.reloadConfig(); return 1; })
                     )
-                    // /pest toggle chat | coords | all
+                    // /pest status
+                    .then(ClientCommandManager.literal("status")
+                        .executes(ctx -> { TaunCore.showToggleStatus(); return 1; })
+                    )
+                    // /pest toggle — toggles chat+coords (like old "all"), subcommands for individual
                     .then(ClientCommandManager.literal("toggle")
+                        .executes(ctx -> { TaunCore.toggleAllTriggers(); return 1; })
                         .then(ClientCommandManager.literal("chat")
                             .executes(ctx -> { TaunCore.toggleChatTriggers(); return 1; })
                         )
                         .then(ClientCommandManager.literal("coords")
                             .executes(ctx -> { TaunCore.toggleCoordTriggers(); return 1; })
-                        )
-                        .then(ClientCommandManager.literal("all")
-                            .executes(ctx -> { TaunCore.toggleAllTriggers(); return 1; })
                         )
                     )
                     // /pest rodswap
@@ -98,6 +100,16 @@ public class TaunCommand {
                             })
                         )
                     )
+                    // /pest guidelay [ms] — set delay between GUI slot clicks for eq/wardrobe swap
+                    .then(ClientCommandManager.literal("guidelay")
+                        .executes(ctx -> { TaunCore.showGuiClickDelay(); return 1; })
+                        .then(ClientCommandManager.argument("ms", LongArgumentType.longArg(100, 3000))
+                            .executes(ctx -> {
+                                TaunCore.setGuiClickDelay(LongArgumentType.getLong(ctx, "ms"));
+                                return 1;
+                            })
+                        )
+                    )
                     // /pest setup
                     .then(ClientCommandManager.literal("setup")
                         .executes(ctx -> { TaunCore.startSetupWizard(); return 1; })
@@ -147,9 +159,26 @@ public class TaunCommand {
                     )
                     .then(ClientCommandManager.literal("extrasell")
                         .executes(ctx -> { TaunCore.toggleExtraSell(); return 1; })
+                        .then(ClientCommandManager.argument("threshold", IntegerArgumentType.integer(1, 10))
+                            .executes(ctx -> { TaunCore.setExtraSellThreshold(IntegerArgumentType.getInteger(ctx, "threshold")); return 1; }))
+                    )
+                    .then(ClientCommandManager.literal("dropbooks")
+                        .executes(ctx -> { TaunCore.toggleDropBooks(); return 1; })
+                        .then(ClientCommandManager.argument("threshold", IntegerArgumentType.integer(1, 10))
+                            .executes(ctx -> { TaunCore.setDropBooksThreshold(IntegerArgumentType.getInteger(ctx, "threshold")); return 1; }))
+                    )
+                    .then(ClientCommandManager.literal("scanbooks")
+                        .executes(ctx -> { TaunCore.scanBooksDebug(); return 1; })
                     )
                     .then(ClientCommandManager.literal("georgesell")
                         .executes(ctx -> { TaunCore.toggleGeorgeSlugSell(); return 1; })
+                        .then(ClientCommandManager.argument("threshold", IntegerArgumentType.integer(1, 10))
+                            .executes(ctx -> { TaunCore.setSlugSellThreshold(IntegerArgumentType.getInteger(ctx, "threshold")); return 1; })
+                        )
+                    )
+                    // /pest wardrobe — configure wardrobe slots for FF and BPC sets
+                    .then(ClientCommandManager.literal("wardrobe")
+                        .executes(ctx -> { TaunCore.startWardrobeSetup(); return 1; })
                     )
             );
         });
