@@ -7,8 +7,10 @@ THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disabl
 
 /pest setup / setspawn / setend / setspawntrigger - FOLLOW THE SETUP https://www.youtube.com/watch?v=DgP2CiXtC_U  (AND BUILD UR FARM LIKE SHOWN IN THE SETUP)  
 
+
 /pest rodswap / wdswap / etherwarp / eqswap  
 /pest rodswap rosedrag (toggles rodswap compatibility for rosedrag rules)  
+/pest wardrobe - will ask you what slots your 2 armor sets are in. (**REQUIRED FOR WARDROBE SWAP IMPORTANT**)  
 /pest setetherwarp — lets u customize where u etherwarp to / where ur glass is  
 /pest eqswap zorro (toggles zorro cape usage during jacobs event) **MAKE SURE U GIVE JACOBS EVENT ENOUGH PRIORITY IN TABLIST**  
 
@@ -21,8 +23,9 @@ THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disabl
 
 /pest georgesell Toggle George slug auto-sell on/off  
 /pest extrasell  Toggle selling extra items using booster cookie menu (mantid claw, stereo, overclockers, larva, chips)  
-/pest random ms — randomize all delays in triggers.txt by ±<ms>  
+/pest random 0-250ms — randomize all delays in triggers.txt by ±<ms>  
 /pest reload / detect / files / debug / help   
+/pest guidelay - change the equipping delay (useful for users with high ping)
 
 =====================================
 
