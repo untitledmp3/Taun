@@ -7,7 +7,6 @@ THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disabl
 
 /pest setup / setspawn / setend / setspawntrigger - FOLLOW THE SETUP https://www.youtube.com/watch?v=DgP2CiXtC_U  (AND BUILD UR FARM LIKE SHOWN IN THE SETUP)  
 
-
 /pest rodswap / wdswap / etherwarp / eqswap  
 /pest rodswap rosedrag (toggles rodswap compatibility for rosedrag rules)  
 /pest wardrobe - will ask you what slots your 2 armor sets are in. (**REQUIRED FOR WARDROBE SWAP IMPORTANT**)  
