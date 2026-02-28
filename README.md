@@ -21,7 +21,8 @@ THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disabl
 /pest dynarest status — checks current settings and next disconnect
 
 /pest georgesell Toggle George slug auto-sell on/off  
-/pest extrasell  Toggle selling extra items using booster cookie menu (mantid claw, stereo, overclockers, larva, chips)  
+/pest extrasell x (x standing for at how many items it will trigger) Toggle selling extra items using booster cookie menu (mantid claw, stereo, overclockers, larva, chips)  
+/pest dropbooks x (x standing for at how many books it will trigger the dropping) (only really useful for ironman)
 /pest random 0-250ms — randomize all delays in triggers.txt by ±<ms>  
 /pest reload / detect / files / debug / help   
 /pest guidelay - change the equipping delay (useful for users with high ping)
