@@ -2234,6 +2234,17 @@ public class TaunCore implements ClientModInitializer {
             case "inventory"              -> getBoundKey(opts.inventoryKey);
             case "drop"                   -> getBoundKey(opts.dropKey);
             case "swap"                   -> getBoundKey(opts.swapHandsKey);
+            // Hotbar slots 1-9: resolve through Minecraft's actual keybind settings
+            // so custom hotbar key assignments (e.g. numpad keys) are respected
+            case "1" -> opts.hotbarKeys.length > 0 ? getBoundKey(opts.hotbarKeys[0]) : -999;
+            case "2" -> opts.hotbarKeys.length > 1 ? getBoundKey(opts.hotbarKeys[1]) : -999;
+            case "3" -> opts.hotbarKeys.length > 2 ? getBoundKey(opts.hotbarKeys[2]) : -999;
+            case "4" -> opts.hotbarKeys.length > 3 ? getBoundKey(opts.hotbarKeys[3]) : -999;
+            case "5" -> opts.hotbarKeys.length > 4 ? getBoundKey(opts.hotbarKeys[4]) : -999;
+            case "6" -> opts.hotbarKeys.length > 5 ? getBoundKey(opts.hotbarKeys[5]) : -999;
+            case "7" -> opts.hotbarKeys.length > 6 ? getBoundKey(opts.hotbarKeys[6]) : -999;
+            case "8" -> opts.hotbarKeys.length > 7 ? getBoundKey(opts.hotbarKeys[7]) : -999;
+            case "9" -> opts.hotbarKeys.length > 8 ? getBoundKey(opts.hotbarKeys[8]) : -999;
             default -> -999; // not a recognized action name
         };
     }
