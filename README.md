@@ -12,7 +12,7 @@ SCHEMATIC - [https://cdn.discordapp.com/attachments/1476600176884973630/14771311
 
 --- Modes ---  
 /pest rodswap / wdswap / etherwarp / eqswap  
-/pest rodswap rosedrag (toggles rodswap compatibility for rosedrag rules)  
+/pest rodswap rosedrag — (toggles rodswap compatibility for rosedrag rules)  
 /pest wardrobe - will ask you what slots your 2 armor sets are in. (**REQUIRED FOR WARDROBE SWAP IMPORTANT**)  
 /pest eqswap zorro (toggles zorro cape usage during jacobs event) **MAKE SURE U GIVE JACOBS EVENT ENOUGH PRIORITY IN TABLIST**  
 
@@ -24,14 +24,15 @@ SCHEMATIC - [https://cdn.discordapp.com/attachments/1476600176884973630/14771311
 /pest dynarest status — checks current settings and next disconnect
 
 --- Utility ---  
-/pest toggle chat / coords / all — toggles triggers / coordinate triggers on or off  
-/pest georgesell Toggle George slug auto-sell on/off  
-/pest extrasell x (x standing for at how many items it will trigger) Toggle selling extra items using booster cookie menu (mantid claw, stereo, overclockers, larva, chips)  
-/pest dropbooks x (x standing for at how many books it will trigger the dropping) (only really useful for ironman)
+/pest toggle chat / coords / leave empty for all — toggles triggers / coordinate triggers on or off  
+/pest georgesell 1-10 — (treshold at which it triggers the sell) Toggle George slug auto-sell on/off  
+/pest extrasell x — (treshold at which it triggers the sell) Toggle selling extra items using booster cookie menu (mantid claw, stereo, overclockers, larva, chips)  
+/pest dropbooks x — (treshold at which it triggers the dropping) (only really useful for ironman)
 /pest random 0-250ms — randomize all delays in triggers.txt by ±<ms>  
 /pest reload / detect / files / debug / help   
-/pest guidelay - change the equipping delay (useful for users with high ping)
-/pest setetherwarp — lets u customize where u etherwarp to / where ur glass is  
+/pest guidelay — change the equipping delay (useful for users with high ping)
+/pest setetherwarp — lets u customize where u etherwarp to / where ur glass is
+/pest status — shows the status of all commands / thresholds and whatnot  
 
 =====================================
 
