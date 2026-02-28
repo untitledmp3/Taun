@@ -8,7 +8,7 @@ THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disabl
 --- Setup ---  
 /pest setup / setspawn / setend / setspawntrigger  
 FOLLOW THE SETUP [https://www.youtube.com/watch?v=Vm9ipIBbMgY](https://www.youtube.com/watch?v=Vm9ipIBbMgY)  
-SCHEMATIC - [https://cdn.discordapp.com/attachments/1476600176884973630/1477131122897981603/Wheat_S-Shape_Taun.litematic](https://cdn.discordapp.com/attachments/1476600176884973630/1477131122897981603/Wheat_S-Shape_Taun.litematic?ex=69a3a50f&is=69a2538f&hm=f67ab5466b8f6dd2cf97b3d2aa1599e7bb51994cf86369bbb96f1b67e9936ee2&)  
+SCHEMATIC - [Wheat_S-Shape_Taun.litematic](https://cdn.discordapp.com/attachments/1476600176884973630/1477381466311753903/Wheat_S-Shape_Taun.litematic?ex=69a48e35&is=69a33cb5&hm=2b287db3515de437a73290da8a719715b6cbae600802f75e297b5a593ae03960&)  
 I REALLY RECOMMEND USING PLOT 16 TO PLOT 11 AS I CAN CONFIRM IT WORKS  
 if u cant be asked making a custom farm design you COULD use taunahi's intermediate rewarper just make sure to disable coordinate triggers with /pest toggle coords (not tested)    
 
