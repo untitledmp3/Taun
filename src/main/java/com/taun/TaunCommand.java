@@ -1,6 +1,7 @@
 package com.taun;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import net.minecraft.client.MinecraftClient;
 import com.mojang.brigadier.arguments.LongArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
@@ -12,6 +13,11 @@ public class TaunCommand {
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             dispatcher.register(
                 ClientCommandManager.literal("pest")
+                    .executes(ctx -> {
+                        MinecraftClient.getInstance().send(() ->
+                            MinecraftClient.getInstance().setScreen(new TaunConfigScreen(null)));
+                        return 1;
+                    })
                     // /pest reload
                     .then(ClientCommandManager.literal("reload")
                         .executes(ctx -> { TaunCore.reloadConfig(); return 1; })
@@ -55,6 +61,10 @@ public class TaunCommand {
                         .then(ClientCommandManager.literal("zorro")
                             .executes(ctx -> { TaunCore.toggleZorro(); return 1; })
                         )
+                    )
+                    // /pest taunahirewarp — toggle Taunahi intermediate rewarp (disables coord triggers)
+                    .then(ClientCommandManager.literal("taunahirewarp")
+                        .executes(ctx -> { TaunCore.toggleTaunahiRewarp(); return 1; })
                     )
                     // /pest debug
                     .then(ClientCommandManager.literal("debug")
@@ -161,6 +171,8 @@ public class TaunCommand {
                         .executes(ctx -> { TaunCore.toggleExtraSell(); return 1; })
                         .then(ClientCommandManager.argument("threshold", IntegerArgumentType.integer(1, 10))
                             .executes(ctx -> { TaunCore.setExtraSellThreshold(IntegerArgumentType.getInteger(ctx, "threshold")); return 1; }))
+                        .then(ClientCommandManager.literal("vinyls")
+                            .executes(ctx -> { TaunCore.toggleSellVinyls(); return 1; }))
                     )
                     .then(ClientCommandManager.literal("dropbooks")
                         .executes(ctx -> { TaunCore.toggleDropBooks(); return 1; })

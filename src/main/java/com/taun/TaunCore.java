@@ -28,7 +28,7 @@ import java.util.Properties;
 
 public class TaunCore implements ClientModInitializer {
     public static final String MOD_ID = "Taun+++";
-    private static final int CONFIG_VERSION = 16;
+    private static final int CONFIG_VERSION = 17;
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
     
     private static final List<ChatTrigger> triggers = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -98,15 +98,20 @@ public class TaunCore implements ClientModInitializer {
      */
     private static String dynRestMode = "disconnect";
 
-    // ── Slug inventory monitoring ─────────────────────────────────────────────
+    // ── Slug / Rat inventory monitoring ──────────────────────────────────────
 
-    /** Counts how many [Lvl 1] Slug items are in the player's full inventory (slots 0-35). */
+    /** Returns true if the item name matches a [Lvl 1] Slug or [Lvl 1] Rat pet. */
+    private static boolean isGeorgeSellPet(String lowerName) {
+        return lowerName.contains("[lvl 1] slug") || lowerName.contains("[lvl 1] rat");
+    }
+
+    /** Counts how many [Lvl 1] Slug or [Lvl 1] Rat items are in the player's full inventory (slots 0-35). */
     private static int countSlugsInInventory(MinecraftClient mc) {
         if (mc.player == null) return 0;
         int count = 0;
         for (int i = 0; i < 36; i++) {
             var stack = mc.player.getInventory().getStack(i);
-            if (!stack.isEmpty() && stack.getName().getString().replaceAll("§.", "").toLowerCase().contains("[lvl 1] slug")) {
+            if (!stack.isEmpty() && isGeorgeSellPet(stack.getName().getString().replaceAll("§.", "").toLowerCase())) {
                 count += stack.getCount();
             }
         }
@@ -138,7 +143,7 @@ public class TaunCore implements ClientModInitializer {
             try {
                 MinecraftClient mc = MinecraftClient.getInstance();
                 if (mc.player == null) { georgeSlugSellActive = false; return; }
-                mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Selling slugs (" + slugCount + " slugs in inventory)..."), false);
+                mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Selling slugs/rats (" + slugCount + " pets in inventory)..."), false);
                 mc.execute(() -> { if (mc.player != null) mc.player.networkHandler.sendChatMessage(".ez-stopscript"); });
                 Thread.sleep(500);
                 triggerGeorgeSlugSell();
@@ -194,7 +199,7 @@ public class TaunCore implements ClientModInitializer {
                             var slot = slots.get(i);
                             if (!slot.hasStack()) continue;
                             String name = slot.getStack().getName().getString().replaceAll("§.", "").toLowerCase();
-                            if (name.contains("[lvl 1] slug")) { slugSlot.set(i); break; }
+                            if (isGeorgeSellPet(name)) { slugSlot.set(i); break; }
                         }
                     }
                 } finally { scanLatch.countDown(); }
@@ -267,7 +272,7 @@ public class TaunCore implements ClientModInitializer {
         }
 
         georgeRingDetected = false;
-        if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Slug sell complete!"), false);
+        if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Slug/rat sell complete!"), false);
         LOGGER.info("[SlugSell] Sell sequence complete.");
     }
 
@@ -275,9 +280,36 @@ public class TaunCore implements ClientModInitializer {
     private static int extraSellThreshold = 1; // min items in inventory to trigger booster cookie sell
     private static boolean dropBooksEnabled = false;
     private static int dropBooksThreshold = 1; // min matching books in inventory to trigger drop
-    private static final java.util.List<String> BOOSTER_COOKIE_ITEMS = java.util.List.of(
-        "wriggling larva", "chirping stereo", "mantid claw", "overclocker", "chip"
+    private static final java.util.List<String> BOOSTER_COOKIE_ITEMS_BASE = java.util.List.of(
+        "wriggling larva", "chirping stereo", "mantid claw", "overclocker", "atmospheric filter", "chip"
     );
+    /** All known Hypixel SkyBlock pest vinyl names (lowercase substrings). Sold when sellVinylsEnabled=true. */
+    private static final java.util.List<String> VINYL_ITEMS = java.util.List.of(
+        // 10 original pest vinyls
+        "pretty fly vinyl",          // Fly
+        "cricket choir vinyl",        // Cricket
+        "earthworm ensemble vinyl",   // Earthworm
+        "slow and groovy vinyl",      // Slug
+        "not just a pest vinyl",      // Beetle
+        "cicada symphony vinyl",      // Cicada
+        "dynamites vinyl",            // Mite
+        "rodent revolution vinyl",    // Rat
+        "wings of harmony vinyl",     // Moth
+        "buzzin' beats vinyl",        // Mosquito
+        // 3 newer pest vinyls (Greenhouse update)
+        "imagine dragonflies vinyl",  // Dragonfly
+        "firefly in the hole vinyl",  // Firefly
+        "pray for me vinyl"           // Praying Mantis
+    );
+    private static boolean sellVinylsEnabled = false; // toggle via /pest extrasell vinyls
+
+    /** Returns the active sell list, merging base items + vinyls if enabled. */
+    private static java.util.List<String> getBoosterCookieItems() {
+        if (!sellVinylsEnabled) return BOOSTER_COOKIE_ITEMS_BASE;
+        java.util.List<String> merged = new java.util.ArrayList<>(BOOSTER_COOKIE_ITEMS_BASE);
+        merged.addAll(VINYL_ITEMS);
+        return merged;
+    }
 
     private static void triggerBoosterCookie() throws InterruptedException {
         if (!boosterCookieEnabled) return;
@@ -291,7 +323,7 @@ public class TaunCore implements ClientModInitializer {
                 var stack = mc.player.getInventory().getStack(i);
                 if (stack.isEmpty()) continue;
                 String name = stack.getName().getString().replaceAll("§.", "").toLowerCase();
-                for (String target : BOOSTER_COOKIE_ITEMS) {
+                for (String target : getBoosterCookieItems()) {
                     if (name.contains(target)) { extraSellCount += stack.getCount(); break; }
                 }
             }
@@ -315,7 +347,7 @@ public class TaunCore implements ClientModInitializer {
 
         // Shift-click each target item (player inventory slots only, all stacks)
         boolean foundAny = false;
-        for (String targetName : BOOSTER_COOKIE_ITEMS) {
+        for (String targetName : getBoosterCookieItems()) {
             boolean foundMore = true;
             while (foundMore) {
                 java.util.concurrent.atomic.AtomicInteger itemSlot = new java.util.concurrent.atomic.AtomicInteger(-1);
@@ -390,6 +422,7 @@ public class TaunCore implements ClientModInitializer {
     private static boolean eqSwapPending = false;
     private static boolean jacobContestActive = false;
     private static boolean zorroEnabled = true; // toggle via /pest eqswap zorro
+    private static boolean taunahiRewarpEnabled = false; // toggle via /pest taunahirewarp — disables coord triggers when on
     private static int jacobTimerSeconds = -1;
     private static volatile boolean cropFeverActive = false;
     private static volatile long cropFeverExpiryMs = 0;
@@ -528,7 +561,7 @@ public class TaunCore implements ClientModInitializer {
                         var bstack = mc2.player.getInventory().getStack(bi);
                         if (bstack.isEmpty()) continue;
                         String bname = bstack.getName().getString().replaceAll("§.", "").toLowerCase();
-                        for (String btarget : BOOSTER_COOKIE_ITEMS) { if (bname.contains(btarget)) { bcount += bstack.getCount(); break; } }
+                        for (String btarget : getBoosterCookieItems()) { if (bname.contains(btarget)) { bcount += bstack.getCount(); break; } }
                     }
                     hasBoosterItems = bcount >= extraSellThreshold;
                 }
@@ -895,6 +928,9 @@ public class TaunCore implements ClientModInitializer {
             etherwarpPitch = Float.parseFloat(props.getProperty("etherwarpPitch", "-70"));
             eqSwapEnabled = Boolean.parseBoolean(props.getProperty("eqSwapEnabled", "false"));
             zorroEnabled = Boolean.parseBoolean(props.getProperty("zorroEnabled", "true"));
+            taunahiRewarpEnabled = Boolean.parseBoolean(props.getProperty("taunahiRewarpEnabled", "false"));
+            // When taunahiRewarp is on, coord triggers must stay off
+            if (taunahiRewarpEnabled) coordTriggersEnabled = false;
             finneganMode = Boolean.parseBoolean(props.getProperty("finneganMode", "false"));
             rotateSpeedMs = Long.parseLong(props.getProperty("rotateSpeedMs", "250"));
             guiClickDelayMs = Long.parseLong(props.getProperty("guiClickDelayMs", "400"));
@@ -906,6 +942,7 @@ public class TaunCore implements ClientModInitializer {
             georgeSlugSellEnabled = Boolean.parseBoolean(props.getProperty("georgeSlugSellEnabled", "true"));
             boosterCookieEnabled = Boolean.parseBoolean(props.getProperty("boosterCookieEnabled", "true"));
             extraSellThreshold = Integer.parseInt(props.getProperty("extraSellThreshold", "1"));
+            sellVinylsEnabled = Boolean.parseBoolean(props.getProperty("sellVinylsEnabled", "false"));
             dropBooksEnabled = Boolean.parseBoolean(props.getProperty("dropBooksEnabled", "false"));
             dropBooksThreshold = Integer.parseInt(props.getProperty("dropBooksThreshold", "1"));
             slugSellThreshold = Integer.parseInt(props.getProperty("slugSellThreshold", "3"));
@@ -943,6 +980,7 @@ public class TaunCore implements ClientModInitializer {
             props.setProperty("etherwarpPitch", String.valueOf(etherwarpPitch));
             props.setProperty("eqSwapEnabled", String.valueOf(eqSwapEnabled));
             props.setProperty("zorroEnabled", String.valueOf(zorroEnabled));
+            props.setProperty("taunahiRewarpEnabled", String.valueOf(taunahiRewarpEnabled));
             props.setProperty("finneganMode", String.valueOf(finneganMode));
             props.setProperty("rotateSpeedMs", String.valueOf(rotateSpeedMs));
             props.setProperty("guiClickDelayMs", String.valueOf(guiClickDelayMs));
@@ -956,6 +994,7 @@ public class TaunCore implements ClientModInitializer {
             props.setProperty("georgeSlugSellEnabled", String.valueOf(georgeSlugSellEnabled));
             props.setProperty("boosterCookieEnabled", String.valueOf(boosterCookieEnabled));
             props.setProperty("extraSellThreshold", String.valueOf(extraSellThreshold));
+            props.setProperty("sellVinylsEnabled", String.valueOf(sellVinylsEnabled));
             props.setProperty("dropBooksEnabled", String.valueOf(dropBooksEnabled));
             props.setProperty("dropBooksThreshold", String.valueOf(dropBooksThreshold));
             props.setProperty("slugSellThreshold", String.valueOf(slugSellThreshold));
@@ -2018,9 +2057,11 @@ public class TaunCore implements ClientModInitializer {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
         String keyLower = key.toLowerCase().trim();
-        // First try to resolve via Minecraft's actual keybind settings
-        int keyCode = resolveMinecraftKeybind(keyLower);
-        if (keyCode == -999) keyCode = getKeyCode(keyLower); // fall through to static map
+        // First: try to fire the action as a real Minecraft KeyBinding (works for ANY bound key/button)
+        net.minecraft.client.option.KeyBinding binding = resolveBinding(keyLower);
+        if (binding != null) { fireBinding(binding); return; }
+        // Fallback: raw GLFW simulation for literal key names (e.g. "f5", "numpad1")
+        int keyCode = getKeyCode(keyLower);
         if (keyCode == -1) return;
         if (keyCode < 0) { pressMouse(keyCode, key); return; }
         final int fKeyCode = keyCode;
@@ -2054,7 +2095,7 @@ public class TaunCore implements ClientModInitializer {
             try { latch.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             return;
         }
-        int glfwButton = switch (mouseCode) { case -100 -> GLFW.GLFW_MOUSE_BUTTON_LEFT; case -102 -> GLFW.GLFW_MOUSE_BUTTON_MIDDLE; default -> -1; };
+        int glfwButton = switch (mouseCode) { case -100 -> GLFW.GLFW_MOUSE_BUTTON_LEFT; case -102 -> GLFW.GLFW_MOUSE_BUTTON_MIDDLE; default -> (mouseCode <= -200) ? (-(mouseCode + 200)) : -1; };
         if (glfwButton == -1) return;
         java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
         client.execute(() -> {
@@ -2082,8 +2123,10 @@ public class TaunCore implements ClientModInitializer {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
         String keyLower = key.toLowerCase().trim();
-        int keyCode = resolveMinecraftKeybind(keyLower);
-        if (keyCode == -999) keyCode = getKeyCode(keyLower);
+        // First: try to hold via real Minecraft KeyBinding
+        net.minecraft.client.option.KeyBinding binding = resolveBinding(keyLower);
+        if (binding != null) { holdBinding(binding, keyLower); return; }
+        int keyCode = getKeyCode(keyLower);
         if (keyCode == -1) return;
         java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
         if (keyCode < 0) {
@@ -2101,7 +2144,7 @@ public class TaunCore implements ClientModInitializer {
             final int glfwButton = switch (keyCode) {
                 case -100 -> GLFW.GLFW_MOUSE_BUTTON_LEFT;
                 case -102 -> GLFW.GLFW_MOUSE_BUTTON_MIDDLE;
-                default -> -1;
+                default -> (keyCode <= -200) ? (-(keyCode + 200)) : -1;
             };
             if (glfwButton == -1) return;
             final int fCode = keyCode;
@@ -2133,8 +2176,10 @@ public class TaunCore implements ClientModInitializer {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
         String keyLower = key.toLowerCase().trim();
-        int keyCode = resolveMinecraftKeybind(keyLower);
-        if (keyCode == -999) keyCode = getKeyCode(keyLower);
+        // First: unhold via real Minecraft KeyBinding
+        net.minecraft.client.option.KeyBinding binding = resolveBinding(keyLower);
+        if (binding != null) { unholdBinding(binding, keyLower); return; }
+        int keyCode = getKeyCode(keyLower);
         if (keyCode == -1) return;
         java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
         if (keyCode < 0) {
@@ -2143,7 +2188,7 @@ public class TaunCore implements ClientModInitializer {
             final int glfwButton = switch (keyCode) {
                 case -100 -> GLFW.GLFW_MOUSE_BUTTON_LEFT;
                 case -102 -> GLFW.GLFW_MOUSE_BUTTON_MIDDLE;
-                default -> -1;
+                default -> (keyCode <= -200) ? (-(keyCode + 200)) : -1;
             };
             if (glfwButton == -1) return;
             final int fCode = keyCode;
@@ -2216,6 +2261,102 @@ public class TaunCore implements ClientModInitializer {
      * Returns -999 if not a known action name, so caller can fall through to getKeyCode().
      * Returns -1 if action is known but unbound.
      */
+    // ── KeyBinding-based helpers (work for any bound key/button including side mouse buttons) ──
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, net.minecraft.client.option.KeyBinding>
+        heldBindings = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Returns the Minecraft KeyBinding for a named action, or null if not a known action name. */
+    private static net.minecraft.client.option.KeyBinding resolveBinding(String key) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.options == null) return null;
+        net.minecraft.client.option.GameOptions o = mc.options;
+        return switch (key) {
+            case "sneak", "shift"                             -> o.sneakKey;
+            case "use", "rmb", "rightclick", "mouse2"        -> o.useKey;
+            case "attack", "lmb", "leftclick", "mouse1"      -> o.attackKey;
+            case "jump", "space"                              -> o.jumpKey;
+            case "sprint"                                     -> o.sprintKey;
+            case "forward"                                    -> o.forwardKey;
+            case "back"                                       -> o.backKey;
+            case "left"                                       -> o.leftKey;
+            case "right"                                      -> o.rightKey;
+            case "inventory"                                  -> o.inventoryKey;
+            case "drop"                                       -> o.dropKey;
+            case "swap"                                       -> o.swapHandsKey;
+            case "1" -> o.hotbarKeys.length > 0 ? o.hotbarKeys[0] : null;
+            case "2" -> o.hotbarKeys.length > 1 ? o.hotbarKeys[1] : null;
+            case "3" -> o.hotbarKeys.length > 2 ? o.hotbarKeys[2] : null;
+            case "4" -> o.hotbarKeys.length > 3 ? o.hotbarKeys[3] : null;
+            case "5" -> o.hotbarKeys.length > 4 ? o.hotbarKeys[4] : null;
+            case "6" -> o.hotbarKeys.length > 5 ? o.hotbarKeys[5] : null;
+            case "7" -> o.hotbarKeys.length > 6 ? o.hotbarKeys[6] : null;
+            case "8" -> o.hotbarKeys.length > 7 ? o.hotbarKeys[7] : null;
+            case "9" -> o.hotbarKeys.length > 8 ? o.hotbarKeys[8] : null;
+            default  -> null;
+        };
+    }
+
+    /** Fires a single press+release of a KeyBinding — works for any bound key or mouse button. */
+    /** Gets the currently bound InputUtil.Key for a binding (NOT the default — the actual current binding). */
+    private static net.minecraft.client.util.InputUtil.Key getBoundInputKey(net.minecraft.client.option.KeyBinding binding) {
+        try {
+            return net.minecraft.client.util.InputUtil.fromTranslationKey(binding.getBoundKeyTranslationKey());
+        } catch (Exception e) {
+            return binding.getDefaultKey();
+        }
+    }
+
+    private static void fireBinding(net.minecraft.client.option.KeyBinding binding) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        net.minecraft.client.util.InputUtil.Key boundKey = getBoundInputKey(binding);
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        mc.execute(() -> {
+            try {
+                net.minecraft.client.option.KeyBinding.setKeyPressed(boundKey, true);
+                binding.setPressed(true);
+                net.minecraft.client.option.KeyBinding.onKeyPressed(boundKey);
+            } finally { latch.countDown(); }
+        });
+        try { latch.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        mc.execute(() -> {
+            net.minecraft.client.option.KeyBinding.setKeyPressed(boundKey, false);
+            binding.setPressed(false);
+        });
+    }
+
+    /** Holds a KeyBinding down (until unholdBinding is called). */
+    private static void holdBinding(net.minecraft.client.option.KeyBinding binding, String key) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        net.minecraft.client.util.InputUtil.Key boundKey = getBoundInputKey(binding);
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        mc.execute(() -> {
+            try {
+                net.minecraft.client.option.KeyBinding.setKeyPressed(boundKey, true);
+                binding.setPressed(true);
+                net.minecraft.client.option.KeyBinding.onKeyPressed(boundKey);
+                heldBindings.put(key, binding);
+            } finally { latch.countDown(); }
+        });
+        try { latch.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
+    /** Releases a held KeyBinding. */
+    private static void unholdBinding(net.minecraft.client.option.KeyBinding binding, String key) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        net.minecraft.client.util.InputUtil.Key boundKey = getBoundInputKey(binding);
+        heldBindings.remove(key);
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        mc.execute(() -> {
+            try {
+                net.minecraft.client.option.KeyBinding.setKeyPressed(boundKey, false);
+                binding.setPressed(false);
+            } finally { latch.countDown(); }
+        });
+        try { latch.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
     private static int resolveMinecraftKeybind(String key) {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc == null) return -999;
@@ -2261,11 +2402,13 @@ public class TaunCore implements ClientModInitializer {
             if (type == net.minecraft.client.util.InputUtil.Type.KEYSYM) {
                 return key.getCode();
             } else if (type == net.minecraft.client.util.InputUtil.Type.MOUSE) {
+                // Encode ALL mouse buttons as negative codes so pressMouse/holdKey can handle them.
+                // Known codes: LEFT=-100, RIGHT=-101, MIDDLE=-102, side/extra = -(200 + glfwButton)
                 return switch (key.getCode()) {
                     case GLFW.GLFW_MOUSE_BUTTON_LEFT   -> -100;
                     case GLFW.GLFW_MOUSE_BUTTON_RIGHT  -> -101;
                     case GLFW.GLFW_MOUSE_BUTTON_MIDDLE -> -102;
-                    default -> -1;
+                    default -> -(200 + key.getCode()); // side buttons: button3=-203, button4=-204, button5=-205 ...
                 };
             }
         } catch (Exception e) {
@@ -2276,10 +2419,12 @@ public class TaunCore implements ClientModInitializer {
 
     private static int getKeyCode(String key) {
         return switch (key) {
-            case "1" -> GLFW.GLFW_KEY_1; case "2" -> GLFW.GLFW_KEY_2; case "3" -> GLFW.GLFW_KEY_3;
-            case "4" -> GLFW.GLFW_KEY_4; case "5" -> GLFW.GLFW_KEY_5; case "6" -> GLFW.GLFW_KEY_6;
-            case "7" -> GLFW.GLFW_KEY_7; case "8" -> GLFW.GLFW_KEY_8; case "9" -> GLFW.GLFW_KEY_9;
-            case "0" -> GLFW.GLFW_KEY_0;
+            // ── Digits ───────────────────────────────────────────────────────
+            case "0" -> GLFW.GLFW_KEY_0; case "1" -> GLFW.GLFW_KEY_1; case "2" -> GLFW.GLFW_KEY_2;
+            case "3" -> GLFW.GLFW_KEY_3; case "4" -> GLFW.GLFW_KEY_4; case "5" -> GLFW.GLFW_KEY_5;
+            case "6" -> GLFW.GLFW_KEY_6; case "7" -> GLFW.GLFW_KEY_7; case "8" -> GLFW.GLFW_KEY_8;
+            case "9" -> GLFW.GLFW_KEY_9;
+            // ── Letters ──────────────────────────────────────────────────────
             case "a" -> GLFW.GLFW_KEY_A; case "b" -> GLFW.GLFW_KEY_B; case "c" -> GLFW.GLFW_KEY_C;
             case "d" -> GLFW.GLFW_KEY_D; case "e" -> GLFW.GLFW_KEY_E; case "f" -> GLFW.GLFW_KEY_F;
             case "g" -> GLFW.GLFW_KEY_G; case "h" -> GLFW.GLFW_KEY_H; case "i" -> GLFW.GLFW_KEY_I;
@@ -2289,16 +2434,81 @@ public class TaunCore implements ClientModInitializer {
             case "s" -> GLFW.GLFW_KEY_S; case "t" -> GLFW.GLFW_KEY_T; case "u" -> GLFW.GLFW_KEY_U;
             case "v" -> GLFW.GLFW_KEY_V; case "w" -> GLFW.GLFW_KEY_W; case "x" -> GLFW.GLFW_KEY_X;
             case "y" -> GLFW.GLFW_KEY_Y; case "z" -> GLFW.GLFW_KEY_Z;
-            case "enter", "return" -> GLFW.GLFW_KEY_ENTER;
-            case "space" -> GLFW.GLFW_KEY_SPACE;
-            case "esc", "escape" -> GLFW.GLFW_KEY_ESCAPE;
-            case "tab" -> GLFW.GLFW_KEY_TAB;
-            case "shift" -> GLFW.GLFW_KEY_LEFT_SHIFT;
-            case "ctrl", "control" -> GLFW.GLFW_KEY_LEFT_CONTROL;
-            case "alt" -> GLFW.GLFW_KEY_LEFT_ALT;
-            case "leftclick", "lmb", "mouse1" -> -100;
-            case "rightclick", "rmb", "mouse2" -> -101;
+            // ── Function keys ────────────────────────────────────────────────
+            case "f1"  -> GLFW.GLFW_KEY_F1;  case "f2"  -> GLFW.GLFW_KEY_F2;
+            case "f3"  -> GLFW.GLFW_KEY_F3;  case "f4"  -> GLFW.GLFW_KEY_F4;
+            case "f5"  -> GLFW.GLFW_KEY_F5;  case "f6"  -> GLFW.GLFW_KEY_F6;
+            case "f7"  -> GLFW.GLFW_KEY_F7;  case "f8"  -> GLFW.GLFW_KEY_F8;
+            case "f9"  -> GLFW.GLFW_KEY_F9;  case "f10" -> GLFW.GLFW_KEY_F10;
+            case "f11" -> GLFW.GLFW_KEY_F11; case "f12" -> GLFW.GLFW_KEY_F12;
+            // ── Numpad ───────────────────────────────────────────────────────
+            case "numpad0", "kp0" -> GLFW.GLFW_KEY_KP_0;
+            case "numpad1", "kp1" -> GLFW.GLFW_KEY_KP_1;
+            case "numpad2", "kp2" -> GLFW.GLFW_KEY_KP_2;
+            case "numpad3", "kp3" -> GLFW.GLFW_KEY_KP_3;
+            case "numpad4", "kp4" -> GLFW.GLFW_KEY_KP_4;
+            case "numpad5", "kp5" -> GLFW.GLFW_KEY_KP_5;
+            case "numpad6", "kp6" -> GLFW.GLFW_KEY_KP_6;
+            case "numpad7", "kp7" -> GLFW.GLFW_KEY_KP_7;
+            case "numpad8", "kp8" -> GLFW.GLFW_KEY_KP_8;
+            case "numpad9", "kp9" -> GLFW.GLFW_KEY_KP_9;
+            case "numpad.", "kp.", "kpdecimal"  -> GLFW.GLFW_KEY_KP_DECIMAL;
+            case "numpad/", "kp/", "kpdivide"   -> GLFW.GLFW_KEY_KP_DIVIDE;
+            case "numpad*", "kp*", "kpmultiply" -> GLFW.GLFW_KEY_KP_MULTIPLY;
+            case "numpad-", "kp-", "kpsubtract" -> GLFW.GLFW_KEY_KP_SUBTRACT;
+            case "numpad+", "kp+", "kpadd"      -> GLFW.GLFW_KEY_KP_ADD;
+            case "numpadenter", "kpenter"        -> GLFW.GLFW_KEY_KP_ENTER;
+            // ── Arrow keys ───────────────────────────────────────────────────
+            case "up"    -> GLFW.GLFW_KEY_UP;    case "down"  -> GLFW.GLFW_KEY_DOWN;
+            case "left"  -> GLFW.GLFW_KEY_LEFT;  case "right" -> GLFW.GLFW_KEY_RIGHT;
+            // ── Navigation ───────────────────────────────────────────────────
+            case "home"     -> GLFW.GLFW_KEY_HOME;
+            case "end"      -> GLFW.GLFW_KEY_END;
+            case "pageup"   -> GLFW.GLFW_KEY_PAGE_UP;
+            case "pagedown" -> GLFW.GLFW_KEY_PAGE_DOWN;
+            case "insert"   -> GLFW.GLFW_KEY_INSERT;
+            case "delete"   -> GLFW.GLFW_KEY_DELETE;
+            // ── Modifiers ────────────────────────────────────────────────────
+            case "shift", "lshift", "leftshift"   -> GLFW.GLFW_KEY_LEFT_SHIFT;
+            case "rshift", "rightshift"            -> GLFW.GLFW_KEY_RIGHT_SHIFT;
+            case "ctrl", "control", "lctrl"        -> GLFW.GLFW_KEY_LEFT_CONTROL;
+            case "rctrl", "rightctrl"              -> GLFW.GLFW_KEY_RIGHT_CONTROL;
+            case "alt", "lalt", "leftalt"          -> GLFW.GLFW_KEY_LEFT_ALT;
+            case "ralt", "rightalt", "altgr"       -> GLFW.GLFW_KEY_RIGHT_ALT;
+            case "super", "lsuper", "win", "lwin"  -> GLFW.GLFW_KEY_LEFT_SUPER;
+            case "rsuper", "rwin"                  -> GLFW.GLFW_KEY_RIGHT_SUPER;
+            // ── Special keys ─────────────────────────────────────────────────
+            case "enter", "return"       -> GLFW.GLFW_KEY_ENTER;
+            case "space"                 -> GLFW.GLFW_KEY_SPACE;
+            case "esc", "escape"         -> GLFW.GLFW_KEY_ESCAPE;
+            case "tab"                   -> GLFW.GLFW_KEY_TAB;
+            case "backspace"             -> GLFW.GLFW_KEY_BACKSPACE;
+            case "capslock", "caps"      -> GLFW.GLFW_KEY_CAPS_LOCK;
+            case "numlock"               -> GLFW.GLFW_KEY_NUM_LOCK;
+            case "scrolllock", "scroll"  -> GLFW.GLFW_KEY_SCROLL_LOCK;
+            case "printscreen", "prtsc"  -> GLFW.GLFW_KEY_PRINT_SCREEN;
+            case "pause", "pausebreak"   -> GLFW.GLFW_KEY_PAUSE;
+            case "menu", "appkey"        -> GLFW.GLFW_KEY_MENU;
+            // ── Punctuation / symbols ────────────────────────────────────────
+            case "-", "minus"            -> GLFW.GLFW_KEY_MINUS;
+            case "=", "equals"           -> GLFW.GLFW_KEY_EQUAL;
+            case "[", "leftbracket"      -> GLFW.GLFW_KEY_LEFT_BRACKET;
+            case "]", "rightbracket"     -> GLFW.GLFW_KEY_RIGHT_BRACKET;
+            case "\\", "backslash"     -> GLFW.GLFW_KEY_BACKSLASH;
+            case ";", "semicolon"        -> GLFW.GLFW_KEY_SEMICOLON;
+            case "'", "apostrophe"       -> GLFW.GLFW_KEY_APOSTROPHE;
+            case "`", "grave"            -> GLFW.GLFW_KEY_GRAVE_ACCENT;
+            case ",", "comma"            -> GLFW.GLFW_KEY_COMMA;
+            case ".", "period"           -> GLFW.GLFW_KEY_PERIOD;
+            case "/", "slash"            -> GLFW.GLFW_KEY_SLASH;
+            // ── Mouse buttons ────────────────────────────────────────────────
+            case "leftclick", "lmb", "mouse1"   -> -100;
+            case "rightclick", "rmb", "mouse2"  -> -101;
             case "middleclick", "mmb", "mouse3" -> -102;
+            case "mouse4", "mb4", "side1"       -> -(200 + GLFW.GLFW_MOUSE_BUTTON_4);
+            case "mouse5", "mb5", "side2"       -> -(200 + GLFW.GLFW_MOUSE_BUTTON_5);
+            case "mouse6", "mb6"                -> -(200 + GLFW.GLFW_MOUSE_BUTTON_6);
+            case "mouse7", "mb7"                -> -(200 + GLFW.GLFW_MOUSE_BUTTON_7);
             default -> -1;
         };
     }
@@ -2357,8 +2567,6 @@ public class TaunCore implements ClientModInitializer {
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Rosedrag mode: " + (rosedragEnabled ? "§aENABLED" : "§cDISABLED")), false);
     }
 
-    public static boolean isRosedragEnabled() { return rosedragEnabled; }
-
     public static void toggleWardrobeSwap() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
@@ -2399,6 +2607,22 @@ public class TaunCore implements ClientModInitializer {
         if (zorroEnabled) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §e⚠ Make sure you give Jacob's Event enough priority in tablist"), false);
     }
 
+    public static void toggleTaunahiRewarp() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        taunahiRewarpEnabled = !taunahiRewarpEnabled;
+        // Coord triggers conflict with Taunahi intermediate rewarp — disable them when this mode is on
+        if (taunahiRewarpEnabled && coordTriggersEnabled) {
+            coordTriggersEnabled = false;
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Coordinate Triggers: §cDISABLED §7(incompatible with Taunahi Rewarp)"), false);
+        }
+        saveSettings();
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Taunahi Intermediate Rewarp: " + (taunahiRewarpEnabled ? "§aENABLED" : "§cDISABLED")), false);
+        if (taunahiRewarpEnabled) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §e⚠ Coordinate triggers have been disabled (they conflict with Taunahi rewarp)"), false);
+    }
+
+    public static boolean isTaunahiRewarpEnabled() { return taunahiRewarpEnabled; }
+
     public static void toggleDebug() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
@@ -2411,7 +2635,7 @@ public class TaunCore implements ClientModInitializer {
         if (client.player == null) return;
         georgeSlugSellEnabled = !georgeSlugSellEnabled;
         saveSettings();
-        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George slug sell: " + (georgeSlugSellEnabled ? "§aENABLED" : "§cDISABLED")), false);
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George slug/rat sell: " + (georgeSlugSellEnabled ? "§aENABLED" : "§cDISABLED")), false);
     }
 
     public static void setSlugSellThreshold(int n) {
@@ -2419,7 +2643,7 @@ public class TaunCore implements ClientModInitializer {
         if (client.player == null) return;
         slugSellThreshold = n;
         saveSettings();
-        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George slug sell threshold set to §e" + n + " §7slug(s). George sell: §a" + (georgeSlugSellEnabled ? "ENABLED" : "§cDISABLED")), false);
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George slug/rat sell threshold set to §e" + n + " §7pet(s). George sell: §a" + (georgeSlugSellEnabled ? "ENABLED" : "§cDISABLED")), false);
     }
 
     public static void toggleExtraSell() {
@@ -2438,6 +2662,14 @@ public class TaunCore implements ClientModInitializer {
         if (!boosterCookieEnabled) { boosterCookieEnabled = true; }
         saveSettings();
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra sell threshold set to §e" + n + " §7item(s). Extra sell: §aENABLED"), false);
+    }
+
+    public static void toggleSellVinyls() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        sellVinylsEnabled = !sellVinylsEnabled;
+        saveSettings();
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Vinyl sell: " + (sellVinylsEnabled ? "§aENABLED §7(all SkyBlock vinyls will be sold via /boostercookie)" : "§cDISABLED")), false);
     }
 
     public static void toggleDropBooks() {
@@ -2488,11 +2720,17 @@ public class TaunCore implements ClientModInitializer {
     public static void setGuiClickDelay(long ms) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
-        if (ms < 100 || ms > 3000) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §cInvalid value. Must be between 100 and 3000ms."), false); return; }
+        if (ms < 350 || ms > 1500) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §cInvalid value. Must be between 350 and 1500ms."), false); return; }
         guiClickDelayMs = ms;
         saveSettings();
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7GUI click delay set to §e" + ms + "ms"), false);
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Equipment and Wardrobe swapping at: §e" + ms + "ms §7per click"), false);
+    }
+
+    /** Silent version — sets value without printing to chat. Used by the ModMenu slider on release. */
+    public static void setGuiClickDelaySilent(long ms) {
+        guiClickDelayMs = Math.min(1500, Math.max(350, ms));
+        saveSettings();
     }
 
     public static void showGuiClickDelay() {
@@ -2502,13 +2740,61 @@ public class TaunCore implements ClientModInitializer {
     }
 
     public static long getGuiClickDelayMs() { return guiClickDelayMs; }
+    public static long getGuiClickDelay()   { return guiClickDelayMs; }
 
-    public static boolean isRodswapEnabled() { return rodswapEnabled; }
+    public static boolean isRodswapEnabled()      { return rodswapEnabled; }
+    public static boolean isRosedragEnabled()     { return rosedragEnabled; }
     public static boolean isWardrobeSwapEnabled() { return wardrobeSwapEnabled; }
-    public static boolean isEtherwarpEnabled() { return etherwarpEnabled; }
-    public static boolean isEqSwapEnabled() { return eqSwapEnabled; }
-    public static boolean isDebugEnabled() { return debugEnabled; }
-    public static long getRotateSpeedMs() { return rotateSpeedMs; }
+    public static boolean isEtherwarpEnabled()    { return etherwarpEnabled; }
+    public static boolean isEqSwapEnabled()       { return eqSwapEnabled; }
+    public static boolean isZorroEnabled()        { return zorroEnabled; }
+    public static boolean isDebugEnabled()        { return debugEnabled; }
+    public static boolean isGeorgeSlugSellEnabled() { return georgeSlugSellEnabled; }
+    public static boolean isBoosterCookieEnabled()  { return boosterCookieEnabled; }
+    public static boolean isSellVinylsEnabled()     { return sellVinylsEnabled; }
+    public static boolean isDropBooksEnabled()      { return dropBooksEnabled; }
+    public static long getRotateSpeedMs()           { return rotateSpeedMs; }
+    public static int  getSlugSellThreshold()       { return slugSellThreshold; }
+    public static int  getExtraSellThreshold()      { return extraSellThreshold; }
+    public static int  getDropBooksThreshold()      { return dropBooksThreshold; }
+
+    // ── Setters for ModMenu config screen ─────────────────────────────────────
+    public static void setDynamicRestEnabled(boolean v)    { dynamicRestEnabled = v; saveSettings(); }
+    // ── Silent setters (no chat message) — used by ModMenu sliders on release ─
+    public static void setRandomDelaySilent(int v)              { randomDelayRange = Math.min(250, Math.max(0, v)); saveSettings(); }
+    public static void setRestScriptingTimeSilent(int v)        { restScriptingTime = Math.min(120, Math.max(10, v)); saveSettings(); }
+    public static void setRestScriptingTimeOffsetSilent(int v)  { restScriptingTimeOffset = Math.min(15, Math.max(0, v)); saveSettings(); }
+    public static void setRestBreakTimeSilent(int v)            { restBreakTime = Math.min(60, Math.max(1, v)); saveSettings(); }
+    public static void setSlugSellThresholdSilent(int v)        { slugSellThreshold = Math.min(10, Math.max(1, v)); saveSettings(); }
+    public static void setExtraSellThresholdSilent(int v)       { extraSellThreshold = Math.min(10, Math.max(1, v)); saveSettings(); }
+    public static void setDropBooksThresholdSilent(int v)       { dropBooksThreshold = Math.min(10, Math.max(1, v)); saveSettings(); }
+    public static void setWardrobeFfSlotSilent(int v)           { wardrobeFfSlot = Math.min(9, Math.max(0, v)); saveSettings(); }
+    public static void setWardrobeBpcSlotSilent(int v)          { wardrobeBpcSlot = Math.min(9, Math.max(0, v)); saveSettings(); }
+
+    public static void setRestScriptingTime(int v)         { restScriptingTime = v; saveSettings(); }
+    public static void setRestScriptingTimeOffset(int v)   { restScriptingTimeOffset = v; saveSettings(); }
+    public static void setRestBreakTime(int v)             { restBreakTime = v; saveSettings(); }
+    public static void setRodswapEnabled(boolean v)        { rodswapEnabled = v; if (v) wardrobeSwapEnabled = false; saveSettings(); }
+    public static void setRosedragEnabled(boolean v)       { rosedragEnabled = v; saveSettings(); }
+    public static void setWardrobeSwapEnabled(boolean v)   { wardrobeSwapEnabled = v; if (v) rodswapEnabled = false; saveSettings(); }
+    public static void setEtherwarpEnabled(boolean v)      { etherwarpEnabled = v; saveSettings(); }
+    public static void setEqSwapEnabled(boolean v)         { eqSwapEnabled = v; saveSettings(); }
+    public static void setZorroEnabled(boolean v)          { zorroEnabled = v; saveSettings(); }
+    public static void setTaunahiRewarpEnabled(boolean v)  {
+        taunahiRewarpEnabled = v;
+        if (v && coordTriggersEnabled) coordTriggersEnabled = false;
+        saveSettings();
+    }
+    public static void setChatTriggersEnabled(boolean v)   { chatTriggersEnabled = v; saveSettings(); }
+    public static void setCoordTriggersEnabled(boolean v)  {
+        if (taunahiRewarpEnabled && v) return; // blocked while taunahiRewarp is on
+        coordTriggersEnabled = v; saveSettings();
+    }
+    public static void setGeorgeSlugSellEnabled(boolean v) { georgeSlugSellEnabled = v; saveSettings(); }
+    public static void setBoosterCookieEnabled(boolean v)  { boosterCookieEnabled = v; saveSettings(); }
+    public static void setSellVinylsEnabled(boolean v)     { sellVinylsEnabled = v; saveSettings(); }
+    public static void setDropBooksEnabled(boolean v)      { dropBooksEnabled = v; saveSettings(); }
+
 
 
     // ── Cobalt GUI integration getters ────────────────────────────────────────
@@ -2527,8 +2813,9 @@ public class TaunCore implements ClientModInitializer {
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Wardrobe Swap: " + (wardrobeSwapEnabled ? "§aENABLED" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Etherwarp: " + (etherwarpEnabled ? "§aENABLED" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Equipment Swap: " + (eqSwapEnabled ? "§aENABLED" : "§cDISABLED")), false);
-            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra Sell: " + (boosterCookieEnabled ? "§aENABLED §7(threshold: §e" + extraSellThreshold + "§7)" : "§cDISABLED")), false);
-            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George Slug Sell: " + (georgeSlugSellEnabled ? "§aENABLED §7(threshold: §e" + slugSellThreshold + "§7)" : "§cDISABLED")), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Taunahi Rewarp: " + (taunahiRewarpEnabled ? "§aENABLED §7(coord triggers disabled)" : "§cDISABLED")), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra Sell: " + (boosterCookieEnabled ? "§aENABLED §7(threshold: §e" + extraSellThreshold + "§7, vinyls: " + (sellVinylsEnabled ? "§aON§7" : "§cOFF§7") + ")" : "§cDISABLED")), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George Slug/Rat Sell: " + (georgeSlugSellEnabled ? "§aENABLED §7(threshold: §e" + slugSellThreshold + "§7)" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Drop Books: " + (dropBooksEnabled ? "§aENABLED §7(threshold: §e" + dropBooksThreshold + "§7)" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Rotate Speed: §e" + rotateSpeedMs + "ms"), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7GUI Click Delay: §e" + guiClickDelayMs + "ms"), false);
@@ -3194,11 +3481,17 @@ public class TaunCore implements ClientModInitializer {
     private static void showSetupStep() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
-        boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
-        int total = isWdswap ? 11 : 9;
+        boolean isWdswap  = "wdswap".equals(setupData.get("swap_mode"));
+        boolean useRewarp = "yes".equals(setupData.get("rewarp"));
+        // total steps: rewarp skips all coord steps AND the plot question
+        int total;
+        if (useRewarp)      total = isWdswap ? 7 : 6;   // wdswap: FF+BPC slots; non-wdswap: done after rewarp toggle
+        else if (isWdswap)  total = 12;
+        else                total = 10;
+
         // threshold sub-steps take priority
         if ("george".equals(setupData.get("pending_threshold"))) {
-            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 2b/" + total + "] §7How many slugs before selling? §8(1-10, current: §e" + slugSellThreshold + "§8)"), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 2b/" + total + "] §7How many slugs/rats before selling? §8(1-10, current: §e" + slugSellThreshold + "§8)"), false);
             return;
         }
         if ("extrasell".equals(setupData.get("pending_threshold"))) {
@@ -3211,54 +3504,80 @@ public class TaunCore implements ClientModInitializer {
         }
         switch (setupStep) {
             case 0 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 1/" + total + "] §7Swap method? §e§lrodswap §8/ §e§lwdswap §8/ §e§lnone"), false);
-            case 1 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 2/" + total + "] §7Enable §eGeorge Slug Sell§7? §8(auto-sells slugs to George when full) §ayes §8/ §cno"), false);
+            case 1 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 2/" + total + "] §7Enable §eGeorge Slug/Rat Sell§7? §8(auto-sells slugs & rats to George when full) §ayes §8/ §cno"), false);
             case 2 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 3/" + total + "] §7Enable §eExtra Sell§7? §8(sells overclockers, mantid claws etc via booster cookie) §ayes §8/ §cno"), false);
             case 3 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 4/" + total + "] §7Enable §eDrop Books§7? §8(drops Sunder VI / Pesterminator I while flying) §ayes §8/ §cno"), false);
             case 4 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 5/" + total + "] §7Enable §eEquipment Swap§7? §8(swaps equipment sets at pest cooldown) §ayes §8/ §cno"), false);
-            case 5 -> {
-                if (isWdswap) {
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 6/11] §7Which wardrobe slot is your §eFarming Fortune§7 set on? (1-9)"), false);
-                    if (wardrobeFfSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeFfSlot + "§7 — type a number or §ayes§7 to keep)"), false);
-                } else {
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 6/9] §7What is your §ePlot number§7? (e.g. §a11§7)"), false);
-                }
-            }
+            // ── NEW step 5: Taunahi intermediate rewarp ──────────────────────
+            case 5 -> client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 6/" + total + "] §7Use §eTaunahi intermediate rewarp§7? §8(replaces coordinate triggers — enable only if using Taunahi's rewarp) §ayes §8/ §cno"), false);
+            // ── Steps 6+ depend on rewarp choice ─────────────────────────────
             case 6 -> {
-                if (isWdswap) {
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 7/11] §7Which wardrobe slot is your §eBonus Pest Chance§7 set on? (1-9)"), false);
-                    if (wardrobeBpcSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeBpcSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+                if (useRewarp) {
+                    // rewarp+wdswap: ask FF slot; rewarp+non-wdswap: finishSetup() called from input handler at step 5
+                    if (isWdswap) {
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 7/" + total + "] §7Which wardrobe slot is your §eFarming Fortune§7 set on? (1-9)"), false);
+                        if (wardrobeFfSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeFfSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+                    }
                 } else {
-                    setupCommandExecuted = false;
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 7/9] §7Go to your §eSpawn §7and run §a/pest setspawn"), false);
+                    // no-rewarp path: wardrobe slots or plot
+                    if (isWdswap) {
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 7/" + total + "] §7Which wardrobe slot is your §eFarming Fortune§7 set on? (1-9)"), false);
+                        if (wardrobeFfSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeFfSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+                    } else {
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 7/" + total + "] §7What is your §ePlot number§7? (e.g. §a11§7)"), false);
+                    }
                 }
             }
             case 7 -> {
-                if (isWdswap) {
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 8/11] §7What is your §ePlot number§7? (e.g. §a11§7)"), false);
+                if (useRewarp) {
+                    if (isWdswap) {
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 8/" + total + "] §7Which wardrobe slot is your §eBonus Pest Chance§7 set on? (1-9)"), false);
+                        if (wardrobeBpcSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeBpcSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+                    }
+                    // non-wdswap rewarp: nothing to do here, finishSetup() already called at step 5
                 } else {
-                    setupCommandExecuted = false;
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 8/9] §7Move §e3 blocks into the first lane §7and run §a/pest setspawntrigger"), false);
+                    if (isWdswap) {
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 8/" + total + "] §7Which wardrobe slot is your §eBonus Pest Chance§7 set on? (1-9)"), false);
+                        if (wardrobeBpcSlot > 0) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7(Current: slot §a" + wardrobeBpcSlot + "§7 — type a number or §ayes§7 to keep)"), false);
+                    } else {
+                        setupCommandExecuted = false;
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 8/" + total + "] §7Go to your §eSpawn §7and run §a/pest setspawn"), false);
+                    }
                 }
             }
             case 8 -> {
-                if (isWdswap) {
-                    setupCommandExecuted = false;
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 9/11] §7Go to your §eSpawn §7and run §a/pest setspawn"), false);
+                if (useRewarp) {
+                    // wdswap+rewarp: finishSetup() already called from input handler after BPC slot (step 7)
                 } else {
-                    setupCommandExecuted = false;
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 9/9] §7Go to the §eEnd of your farm §7and run §a/pest setend"), false);
+                    if (isWdswap) {
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 9/" + total + "] §7What is your §ePlot number§7? (e.g. §a11§7)"), false);
+                    } else {
+                        setupCommandExecuted = false;
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 9/" + total + "] §7Move §e3 blocks into the first lane §7and run §a/pest setspawntrigger"), false);
+                    }
                 }
             }
             case 9 -> {
-                if (isWdswap) {
-                    setupCommandExecuted = false;
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 10/11] §7Move §e3 blocks into the first lane §7and run §a/pest setspawntrigger"), false);
+                if (!useRewarp) {
+                    if (isWdswap) {
+                        setupCommandExecuted = false;
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 10/" + total + "] §7Go to your §eSpawn §7and run §a/pest setspawn"), false);
+                    } else {
+                        setupCommandExecuted = false;
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 10/" + total + "] §7Go to the §eEnd of your farm §7and run §a/pest setend"), false);
+                    }
                 }
             }
             case 10 -> {
-                if (isWdswap) {
+                if (!useRewarp && isWdswap) {
                     setupCommandExecuted = false;
-                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 11/11] §7Go to the §eEnd of your farm §7and run §a/pest setend"), false);
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 11/" + total + "] §7Move §e3 blocks into the first lane §7and run §a/pest setspawntrigger"), false);
+                }
+            }
+            case 11 -> {
+                if (!useRewarp && isWdswap) {
+                    setupCommandExecuted = false;
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a[Step 12/" + total + "] §7Go to the §eEnd of your farm §7and run §a/pest setend"), false);
                 }
             }
         }
@@ -3270,7 +3589,8 @@ public class TaunCore implements ClientModInitializer {
         if (input.equals("cancel")) { cancelSetup(); return true; }
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return true;
-        boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
+        boolean isWdswap  = "wdswap".equals(setupData.get("swap_mode"));
+        boolean useRewarp = "yes".equals(setupData.get("rewarp"));
         boolean yes = input.equals("yes") || input.equals("y");
         boolean no  = input.equals("no")  || input.equals("n");
 
@@ -3281,7 +3601,7 @@ public class TaunCore implements ClientModInitializer {
                 int t = Integer.parseInt(input);
                 if (t < 1 || t > 10) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-10"), false); return true; }
                 switch (pendingThreshold) {
-                    case "george"    -> { slugSellThreshold = t; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Slug threshold: " + t), false); }
+                    case "george"    -> { slugSellThreshold = t; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Slug/rat threshold: " + t), false); }
                     case "extrasell" -> { extraSellThreshold = t; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Extra sell threshold: " + t), false); }
                     case "dropbooks" -> { dropBooksThreshold = t; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Drop books threshold: " + t), false); }
                 }
@@ -3294,8 +3614,11 @@ public class TaunCore implements ClientModInitializer {
 
         switch (setupStep) {
             case 0 -> {
-                if (input.equals("rodswap") || input.equals("wdswap") || input.equals("none")) { setupData.put("swap_mode", input); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Swap mode: " + input), false); setupStep++; showSetupStep(); }
-                else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type rodswap, wdswap, or none"), false);
+                if (input.equals("rodswap") || input.equals("wdswap") || input.equals("none")) {
+                    setupData.put("swap_mode", input);
+                    client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Swap mode: " + input), false);
+                    setupStep++; showSetupStep();
+                } else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type rodswap, wdswap, or none"), false);
             }
             case 1 -> {
                 if (yes || no) {
@@ -3328,35 +3651,63 @@ public class TaunCore implements ClientModInitializer {
                     setupStep++; showSetupStep();
                 } else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type yes or no"), false);
             }
+            // ── NEW step 5: Taunahi rewarp ────────────────────────────────────
             case 5 -> {
+                if (yes || no) {
+                    if (yes) {
+                        taunahiRewarpEnabled = true;
+                        coordTriggersEnabled = false;
+                        setupData.put("rewarp", "yes");
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Taunahi Rewarp: §aENABLED §7(coordinate triggers disabled)"), false);
+                    } else {
+                        setupData.put("rewarp", "no");
+                        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Taunahi Rewarp: §cDISABLED §7(coordinate triggers will be used)"), false);
+                    }
+                    saveSettings();
+                    // rewarp+non-wdswap: no more steps needed, finish immediately
+                    if (taunahiRewarpEnabled && !isWdswap) { finishSetup(); return true; }
+                    setupStep++; showSetupStep();
+                } else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type yes or no"), false);
+            }
+            // ── Step 6: FF slot (wdswap only — rewarp+non-wdswap already finished at step 5) ──────────
+            case 6 -> {
+                // Only reached for wdswap (rewarp+non-wdswap finishes at step 5; no-rewarp+non-wdswap asks plot here)
                 if (isWdswap) {
+                    // FF slot
                     if (yes && wardrobeFfSlot > 0) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ FF slot kept: " + wardrobeFfSlot), false); setupStep++; showSetupStep(); }
-                    else { try { int s = Integer.parseInt(input); if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; } wardrobeFfSlot = s; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ FF slot: " + s), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9 or yes/y"), false); } }
+                    else { try { int s = Integer.parseInt(input); if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; } wardrobeFfSlot = s; saveSettings(); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ FF slot: " + s), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9 or yes/y"), false); } }
                 } else {
-                    try { int p = Integer.parseInt(input); if (p < 1 || p > 24) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-24"), false); return true; } setupData.put("plot_number", String.valueOf(p)); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Plot: " + p), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a valid number"), false); }
+                    // no-rewarp+non-wdswap: plot number
+                    try { int p = Integer.parseInt(input); if (p < 1 || p > 24) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-24"), false); return true; } setupData.put("plot_number", String.valueOf(p)); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Plot: " + p), false); setupStep++; showSetupStep();
+                    } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a valid number"), false); }
                 }
             }
-            case 6 -> {
+            // ── Step 7: BPC slot (wdswap) or setspawn (non-wdswap, no-rewarp) ─
+            case 7 -> {
                 if (isWdswap) {
-                    if (yes && wardrobeBpcSlot > 0) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ BPC slot kept: " + wardrobeBpcSlot), false); setupStep++; showSetupStep(); }
-                    else { try { int s = Integer.parseInt(input); if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; } wardrobeBpcSlot = s; client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ BPC slot: " + s), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9 or yes/y"), false); } }
+                    // BPC slot — if rewarp, finish after this; otherwise continue to plot
+                    if (yes && wardrobeBpcSlot > 0) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ BPC slot kept: " + wardrobeBpcSlot), false); if (useRewarp) finishSetup(); else { setupStep++; showSetupStep(); } }
+                    else { try { int s = Integer.parseInt(input); if (s < 1 || s > 9) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-9"), false); return true; } wardrobeBpcSlot = s; saveSettings(); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ BPC slot: " + s), false); if (useRewarp) finishSetup(); else { setupStep++; showSetupStep(); } } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a number 1-9 or yes/y"), false); } }
                 } else {
+                    // non-wdswap, no-rewarp: waiting for /pest setspawn (handled by addSetspawnCoords)
                     client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawn"), false);
                 }
             }
-            case 7 -> {
-                if (isWdswap) {
-                    try { int p = Integer.parseInt(input); if (p < 1 || p > 24) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-24"), false); return true; } setupData.put("plot_number", String.valueOf(p)); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Plot: " + p), false); setupStep++; showSetupStep(); } catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a valid number"), false); }
+            // ── Step 8: plot (wdswap+rewarp), setspawntrigger (non-wdswap+no-rewarp), or plot (wdswap+no-rewarp) ─
+            case 8 -> {
+                if (!useRewarp && isWdswap) {
+                    // wdswap+no-rewarp: plot number
+                    try { int p = Integer.parseInt(input); if (p < 1 || p > 24) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Must be 1-24"), false); return true; } setupData.put("plot_number", String.valueOf(p)); client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Plot: " + p), false); setupStep++; showSetupStep(); }
+                    catch (NumberFormatException e) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Enter a valid number"), false); }
                 } else {
+                    // non-wdswap, no-rewarp: waiting for /pest setspawntrigger
                     client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawntrigger"), false);
                 }
             }
-            case 8 -> {
-                if (isWdswap) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawn"), false); }
-                else { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setend"), false); }
-            }
-            case 9 -> { if (isWdswap) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawntrigger"), false); }
-            case 10 -> { if (isWdswap) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setend"), false); }
+            // ── Steps 9-11: coord steps for no-rewarp paths ───────────────────
+            case 9  -> { if (!useRewarp) { if (isWdswap) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawn"), false); else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setend"), false); } }
+            case 10 -> { if (!useRewarp && isWdswap) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setspawntrigger"), false); }
+            case 11 -> { if (!useRewarp && isWdswap) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Run §a/pest setend"), false); }
         }
         return true;
     }
@@ -3477,7 +3828,7 @@ public class TaunCore implements ClientModInitializer {
         t.append("  WAITONGUIOPEN ifmatched\n");
         t.append("  COMMAND: .ez-startscript misc:visitor after 50ms\n");
         t.append("TRIGGER: \"Visitor script stopped. [Finished]\"\n");
-        t.append("  COMMAND: /warp garden after 500ms\n").append("  COMMAND: .ez-startscript netherwart:1 after 50ms\n");
+        t.append("  COMMAND: .ez-startscript netherwart:1 after 50ms\n");
     }
 
     private static void appendServerShutdownTrigger(StringBuilder t) {
@@ -3583,7 +3934,9 @@ public class TaunCore implements ClientModInitializer {
     private static void finishSetup() {
         setupWizardActive = false;
         setupFinishTime = System.currentTimeMillis() + 5000;
-        chatTriggersEnabled = true; coordTriggersEnabled = true;
+        chatTriggersEnabled = true;
+        // Only re-enable coord triggers if taunahiRewarp isn't active
+        if (!taunahiRewarpEnabled) coordTriggersEnabled = true;
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
         try {
@@ -3620,7 +3973,7 @@ public class TaunCore implements ClientModInitializer {
             Files.write(coordConfigPath, lines); loadCoordinateTriggers();
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Added setspawn at " + String.format("%.1f, %.1f, %.1f", x, y, z)), false);
             boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
-            int spawnStep = isWdswap ? 8 : 6;
+            int spawnStep = isWdswap ? 9 : 7;
             if (setupWizardActive && setupStep == spawnStep) { setupStep++; showSetupStep(); }
         } catch (IOException e) { LOGGER.error("Failed to save setspawn", e); }
     }
@@ -3638,7 +3991,7 @@ public class TaunCore implements ClientModInitializer {
             Files.write(coordConfigPath, lines); loadCoordinateTriggers();
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Added setend at " + String.format("%.1f, %.1f, %.1f", x, y, z)), false);
             boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
-            int endStep = isWdswap ? 10 : 8;
+            int endStep = isWdswap ? 11 : 9;
             if (setupWizardActive && setupStep == endStep) finishSetup();
         } catch (IOException e) { LOGGER.error("Failed to save setend", e); }
     }
@@ -3653,7 +4006,7 @@ public class TaunCore implements ClientModInitializer {
             Files.write(coordConfigPath, lines); loadCoordinateTriggers();
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Added spawn trigger at " + String.format("%.1f, %.1f, %.1f", x, y, z)), false);
             boolean isWdswap = "wdswap".equals(setupData.get("swap_mode"));
-            int triggerStep = isWdswap ? 9 : 7;
+            int triggerStep = isWdswap ? 10 : 8;
             if (setupWizardActive && setupStep == triggerStep) { setupStep++; showSetupStep(); }
         } catch (IOException e) { LOGGER.error("Failed to save spawn trigger", e); }
     }
@@ -3742,8 +4095,9 @@ public class TaunCore implements ClientModInitializer {
 
         // --- Utilities ---
         client.player.sendMessage(Text.literal("§c§l--- Utilities ---"), false);
-        client.player.sendMessage(Text.literal("§e/pest georgesell §7— toggle George slug auto-sell on/off  §8|  §e/pest georgesell <1-10> §7— set slug threshold"), false);
+        client.player.sendMessage(Text.literal("§e/pest georgesell §7— toggle George slug/rat auto-sell on/off  §8|  §e/pest georgesell <1-10> §7— set slug threshold"), false);
         client.player.sendMessage(Text.literal("§e/pest extrasell §e<1-10> §7— toggle selling extra items via booster cookie menu"), false);
+        client.player.sendMessage(Text.literal("§e/pest extrasell vinyls §7— toggle selling all SkyBlock vinyls (off by default)"), false);
         client.player.sendMessage(Text.literal("§e/pest dropbooks §e<1-10> §7— toggle dropping Sunder VI / Pesterminator I books when found"), false);
         client.player.sendMessage(Text.literal("§e/pest random §70-250ms — randomize all delays in triggers.txt by \u00b1<ms>"), false);
         client.player.sendMessage(Text.literal("§e/pest guidelay §7— change the equipping delay §c(useful for high ping users)"), false);
@@ -3819,7 +4173,6 @@ public class TaunCore implements ClientModInitializer {
         client.player.sendMessage(Text.literal(tools.containsKey("farming_tool") ? "§c§lTaun+++ >> §a✓ Farming Tool: §7Slot " + tools.get("farming_tool") : "§c§lTaun+++ >> §c✗ Farming Tool: §7Not found"), false);
         client.player.sendMessage(Text.literal(tools.containsKey("aotv") ? "§c§lTaun+++ >> §a✓ AOTV: §7Slot " + tools.get("aotv") : "§c§lTaun+++ >> §c✗ AOTV: §7Not found"), false);
         client.player.sendMessage(Text.literal(tools.containsKey("rod") ? "§c§lTaun+++ >> §a✓ Rod: §7Slot " + tools.get("rod") : "§c§lTaun+++ >> §c✗ Rod: §7Not found"), false);
-        client.player.sendMessage(Text.literal(tools.containsKey("abiphone") ? "§c§lTaun+++ >> §a✓ Abiphone: §7Slot " + tools.get("abiphone") + (abiphoneSlot > 0 ? " §7(pinned to slot " + abiphoneSlot + ")" : " §7(auto-detected)") : "§c§lTaun+++ >> §c✗ Abiphone: §7Not found"), false);
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7§o@ROD_SLOT and @FARMING_TOOL_SLOT are resolved dynamically."), false);
     }
 

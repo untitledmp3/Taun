@@ -13,6 +13,7 @@ base {
 
 repositories {
     mavenCentral()
+    maven { url = uri("https://maven.terraformersmc.com/releases") }
 }
 
 dependencies {
@@ -20,6 +21,9 @@ dependencies {
     mappings("net.fabricmc:yarn:1.21.11+build.4:v2")
     modImplementation("net.fabricmc:fabric-loader:0.18.1")
     modImplementation("net.fabricmc.fabric-api:fabric-api:0.141.2+1.21.11")
+
+    // ModMenu — optional, provides the config screen button in the mods list
+    modCompileOnly("com.terraformersmc:modmenu:13.0.0")
 
     // Cobalt GUI support (optional — mod works without it)
     // Build Cobalt from https://github.com/CobaltScripts/Cobalt, copy jar to libs/cobalt.jar
