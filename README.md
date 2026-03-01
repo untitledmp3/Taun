@@ -5,6 +5,10 @@ THIS ONLY WORKS WITH S-SHAPE CROP FARM. (u can use flowers/sugarcane if u disabl
 
 ========= Taun+++ Commands =========  
 
+/pest - opens the gui  
+only works with modmenu  
+https://modrinth.com/mod/modmenu  
+
 --- Setup ---  
 /pest setup / setspawn / setend / setspawntrigger  
 **I STRONGLY SUGGEST USING TAUNAHIS INTERMEDIATE REWARPER AS ITS MUCH EASIER AND LESS BUGGY AND DOESNT REQUIRE A CUSTOM FARM DESIGN**  
