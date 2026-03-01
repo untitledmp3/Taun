@@ -28,7 +28,9 @@ if u cant be asked making a custom farm design you COULD use taunahi's intermedi
 --- Utility ---  
 /pest toggle chat / coords / leave empty for all — toggles triggers / coordinate triggers on or off  
 /pest georgesell 1-10 — (treshold at which it triggers the sell) Toggle George slug auto-sell on/off  
-/pest extrasell x — (treshold at which it triggers the sell) Toggle selling extra items using booster cookie menu (mantid claw, stereo, overclockers, larva, chips)  
+/pest extrasell x — (treshold at which it triggers the sell) Toggle selling extra items using booster cookie menu
+items it sells > mantid claw, stereo, overclockers, larva, chips, atmospheric filter ^  
+/pest extrasell vinyls — toggles vinyl selling (taunahi already does this, someone asked for it ig)  
 /pest dropbooks x — (treshold at which it triggers the dropping) (only really useful for ironman)
 /pest random 0-250ms — randomize all delays in triggers.txt by ±<ms>  
 /pest reload / detect / files / debug / help   
