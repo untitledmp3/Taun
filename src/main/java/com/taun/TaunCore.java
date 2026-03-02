@@ -28,7 +28,7 @@ import java.util.Properties;
 
 public class TaunCore implements ClientModInitializer {
     public static final String MOD_ID = "Taun+++";
-    private static final int CONFIG_VERSION = 17;
+    private static final int CONFIG_VERSION = 18;
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
     
     private static final List<ChatTrigger> triggers = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -2784,6 +2784,8 @@ public class TaunCore implements ClientModInitializer {
         taunahiRewarpEnabled = v;
         if (v && coordTriggersEnabled) coordTriggersEnabled = false;
         saveSettings();
+        // Rewrite triggers.txt so the [Finished] visitor trigger is added/removed immediately
+        writePestTriggers(rodswapEnabled ? "rodswap" : wardrobeSwapEnabled ? "wdswap" : "none");
     }
     public static void setChatTriggersEnabled(boolean v)   { chatTriggersEnabled = v; saveSettings(); }
     public static void setCoordTriggersEnabled(boolean v)  {
@@ -3827,8 +3829,12 @@ public class TaunCore implements ClientModInitializer {
         t.append("  WAITFORCHAT: \"More slots needed to use the Visitor script\" timeout 3000ms\n");
         t.append("  WAITONGUIOPEN ifmatched\n");
         t.append("  COMMAND: .ez-startscript misc:visitor after 50ms\n");
-        t.append("TRIGGER: \"Visitor script stopped. [Finished]\"\n");
-        t.append("  COMMAND: .ez-startscript netherwart:1 after 50ms\n");
+        // When Taunahi rewarp is active the mod handles restarting scripts itself — don't add the
+        // [Finished] trigger or it would interfere with Taunahi's rewarp flow.
+        if (!taunahiRewarpEnabled) {
+            t.append("TRIGGER: \"Visitor script stopped. [Finished]\"\n");
+            t.append("  COMMAND: .ez-startscript netherwart:1 after 50ms\n");
+        }
     }
 
     private static void appendServerShutdownTrigger(StringBuilder t) {

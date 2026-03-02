@@ -4,6 +4,7 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.SliderWidget;
+import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
 
 import java.util.function.Consumer;
@@ -103,13 +104,35 @@ public class TaunConfigScreen extends Screen {
 
         if (TaunCore.isDynamicRestEnabled()) {
             y[0] += SEC_GAP;
-            addIntSlider(col + 8, y[0], BTN_W - 8, "Script Time", "min", 10, 120,
-                    TaunCore::getRestScriptingTime, TaunCore::setRestScriptingTimeSilent); y[0] += GAP;
-            addIntSlider(col + 8, y[0], BTN_W - 8, "Script Offset ±", "min", 0, 15,
-                    TaunCore::getRestScriptingTimeOffset, TaunCore::setRestScriptingTimeOffsetSilent); y[0] += GAP;
-            addIntSlider(col + 8, y[0], BTN_W - 8, "Break Time", "min", 1, 60,
-                    TaunCore::getRestBreakTime, TaunCore::setRestBreakTimeSilent); y[0] += GAP;
+            addIntField(col + 8, y[0], BTN_W - 8, "Script Time (min)", 10, 120,
+                    TaunCore.getRestScriptingTime(), TaunCore::setRestScriptingTimeSilent); y[0] += GAP;
+            addIntField(col + 8, y[0], BTN_W - 8, "Script Offset ± (min)", 0, 15,
+                    TaunCore.getRestScriptingTimeOffset(), TaunCore::setRestScriptingTimeOffsetSilent); y[0] += GAP;
+            addIntField(col + 8, y[0], BTN_W - 8, "Break Time (min)", 1, 60,
+                    TaunCore.getRestBreakTime(), TaunCore::setRestBreakTimeSilent); y[0] += GAP;
         }
+    }
+
+    /** Labelled integer text-field. Saves when the user presses Enter or the field loses focus. */
+    private void addIntField(int x, int y, int w, String label, int min, int max,
+                              int current, java.util.function.Consumer<Integer> setter) {
+        // Label as a disabled button to the left
+        int fieldW = 50;
+        int labelW = w - fieldW - 4;
+        addDrawableChild(ButtonWidget.builder(Text.literal(label), btn -> {})
+                .dimensions(x, y, labelW, BTN_H).build());
+
+        TextFieldWidget field = new TextFieldWidget(textRenderer, x + labelW + 4, y, fieldW, BTN_H,
+                Text.literal(label));
+        field.setMaxLength(4);
+        field.setText(String.valueOf(current));
+        field.setChangedListener(text -> {
+            try {
+                int v = Integer.parseInt(text.trim());
+                if (v >= min && v <= max) setter.accept(v);
+            } catch (NumberFormatException ignored) {}
+        });
+        addDrawableChild(field);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
