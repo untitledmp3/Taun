@@ -14,7 +14,6 @@ https://modrinth.com/mod/modmenu
 **I STRONGLY SUGGEST USING TAUNAHIS INTERMEDIATE REWARPER AS ITS MUCH EASIER AND LESS BUGGY AND DOESNT REQUIRE A CUSTOM FARM DESIGN**  
 FOLLOW THE SETUP [https://www.youtube.com/watch?v=Vm9ipIBbMgY](https://www.youtube.com/watch?v=Vm9ipIBbMgY) **SKIP THE WHOLE LITEMATICA THING AND OTHER STEPS IF YOU ARE GOING TO USE TAUNAHI REWARP**  
 SCHEMATIC - [Wheat_S-Shape_Taun.litematic](https://cdn.discordapp.com/attachments/1476600176884973630/1477381466311753903/Wheat_S-Shape_Taun.litematic?ex=69a48e35&is=69a33cb5&hm=2b287db3515de437a73290da8a719715b6cbae600802f75e297b5a593ae03960&)  
->>>>>>> 942eeaa991306fdd381680eef19348c170e3e25d
 
 --- Modes ---  
 /pest rodswap / wdswap / etherwarp / eqswap  
