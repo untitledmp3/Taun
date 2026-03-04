@@ -302,6 +302,7 @@ public class TaunCore implements ClientModInitializer {
         "pray for me vinyl"           // Praying Mantis
     );
     private static boolean sellVinylsEnabled = false; // toggle via /pest extrasell vinyls
+    private static int vinylSellThreshold = 1; // min vinyls before selling via /pest extrasell vinyl <x>
 
     /** Returns the active sell list, merging base items + vinyls if enabled. */
     private static java.util.List<String> getBoosterCookieItems() {
@@ -317,19 +318,28 @@ public class TaunCore implements ClientModInitializer {
         if (mc.player == null) return;
 
         // Check if any target items are in inventory before opening GUI
-        int extraSellCount = 0;
+        int baseItemCount = 0;
+        int vinylCount = 0;
         if (mc.player != null) {
             for (int i = 0; i < 36; i++) {
                 var stack = mc.player.getInventory().getStack(i);
                 if (stack.isEmpty()) continue;
                 String name = stack.getName().getString().replaceAll("§.", "").toLowerCase();
-                for (String target : getBoosterCookieItems()) {
-                    if (name.contains(target)) { extraSellCount += stack.getCount(); break; }
+                for (String target : BOOSTER_COOKIE_ITEMS_BASE) {
+                    if (name.contains(target)) { baseItemCount += stack.getCount(); break; }
+                }
+                if (sellVinylsEnabled) {
+                    for (String vinyl : VINYL_ITEMS) {
+                        if (name.contains(vinyl)) { vinylCount += stack.getCount(); break; }
+                    }
                 }
             }
         }
-        if (extraSellCount < extraSellThreshold) {
-            if (debugEnabled) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra sell items: " + extraSellCount + "/" + extraSellThreshold + " threshold, skipping"), false);
+        int extraSellCount = baseItemCount + vinylCount;
+        boolean hasEnoughBase   = baseItemCount >= extraSellThreshold;
+        boolean hasEnoughVinyls = sellVinylsEnabled && vinylCount >= vinylSellThreshold;
+        if (!hasEnoughBase && !hasEnoughVinyls) {
+            if (debugEnabled) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra sell: base=" + baseItemCount + "/" + extraSellThreshold + " vinyls=" + vinylCount + "/" + vinylSellThreshold + " — skipping"), false);
             return;
         }
 
@@ -420,6 +430,8 @@ public class TaunCore implements ClientModInitializer {
     private static long restResumeAtMs = 0;
     private static volatile boolean isResting = false;
     private static boolean eqSwapPending = false;
+    private static boolean wdSwapPending = false;   // separate pending flag for wardrobe swap
+    private static boolean pestCdPending = false;   // pending PestCD trigger (fired when farming starts)
     private static boolean jacobContestActive = false;
     private static boolean zorroEnabled = true; // toggle via /pest eqswap zorro
     private static boolean taunahiRewarpEnabled = false; // toggle via /pest taunahirewarp — disables coord triggers when on
@@ -467,6 +479,8 @@ public class TaunCore implements ClientModInitializer {
             lastPestAliveText = "";
             isFarming = false;
             eqSwapPending = false;
+            wdSwapPending = false;
+            pestCdPending = false;
             // Don't clear dynarest state if we're reconnecting as part of a planned rest cycle
             if (!dynamicRestEnabled || !isResting) {
                 isResting = false;
@@ -546,8 +560,44 @@ public class TaunCore implements ClientModInitializer {
                         }).start();
                     }
                 }
+                if (wdSwapPending && wardrobeSwapEnabled) {
+                    boolean fresh = (System.currentTimeMillis() - lastEqSwapFireTime) < (3 * 60 * 1000);
+                    wdSwapPending = false;
+                    if (fresh) {
+                        final List<PestCdTrigger> pendingWdTriggers = new java.util.ArrayList<>(eqPestCdWdTriggers);
+                        new Thread(() -> {
+                            try {
+                                Thread.sleep(1500);
+                                for (PestCdTrigger trigger : pendingWdTriggers) {
+                                    firePestCdTrigger(trigger);
+                                }
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }).start();
+                    }
+                }
+                if (pestCdPending) {
+                    boolean fresh = (System.currentTimeMillis() - lastPestReadyTime) < (3 * 60 * 1000);
+                    pestCdPending = false;
+                    if (fresh) {
+                        final List<PestCdTrigger> pendingCdTriggers = new java.util.ArrayList<>(pestCdTriggers);
+                        new Thread(() -> {
+                            try {
+                                Thread.sleep(1500);
+                                for (PestCdTrigger trigger : pendingCdTriggers) firePestCdTrigger(trigger);
+                                if (pendingCdTriggers.isEmpty() && rodswapEnabled && !eqSwapEnabled) triggerRodSwap();
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }).start();
+                    }
+                }
             } else if (strippedText.contains("(S-Shape) script stopped.")) {
                 isFarming = false;
+                eqSwapPending = false;
+                wdSwapPending = false;
+                pestCdPending = false;
                 if (debugEnabled) MinecraftClient.getInstance().player.sendMessage(Text.literal("§c§lTaun+++ >> §7Farming: §cfalse"), false);
             } else if (strippedText.contains("AutoSell script stopped. [Finished]") && !georgeSlugSellActive
                     && (System.currentTimeMillis() - lastGeorgeSlugSellTime) > GEORGE_SLUG_SELL_COOLDOWN_MS) {
@@ -585,6 +635,8 @@ public class TaunCore implements ClientModInitializer {
                 }
             } else if (strippedText.contains("spawned in") || strippedText.contains("have spawned")) {
                 eqSwapPending = false;
+                wdSwapPending = false;
+                pestCdPending = false;
             }
 
             // ── Crop Fever detection ─────────────────────────────────────────
@@ -943,6 +995,7 @@ public class TaunCore implements ClientModInitializer {
             boosterCookieEnabled = Boolean.parseBoolean(props.getProperty("boosterCookieEnabled", "true"));
             extraSellThreshold = Integer.parseInt(props.getProperty("extraSellThreshold", "1"));
             sellVinylsEnabled = Boolean.parseBoolean(props.getProperty("sellVinylsEnabled", "false"));
+            vinylSellThreshold = Integer.parseInt(props.getProperty("vinylSellThreshold", "1"));
             dropBooksEnabled = Boolean.parseBoolean(props.getProperty("dropBooksEnabled", "false"));
             dropBooksThreshold = Integer.parseInt(props.getProperty("dropBooksThreshold", "1"));
             slugSellThreshold = Integer.parseInt(props.getProperty("slugSellThreshold", "3"));
@@ -995,6 +1048,7 @@ public class TaunCore implements ClientModInitializer {
             props.setProperty("boosterCookieEnabled", String.valueOf(boosterCookieEnabled));
             props.setProperty("extraSellThreshold", String.valueOf(extraSellThreshold));
             props.setProperty("sellVinylsEnabled", String.valueOf(sellVinylsEnabled));
+            props.setProperty("vinylSellThreshold", String.valueOf(vinylSellThreshold));
             props.setProperty("dropBooksEnabled", String.valueOf(dropBooksEnabled));
             props.setProperty("dropBooksThreshold", String.valueOf(dropBooksThreshold));
             props.setProperty("slugSellThreshold", String.valueOf(slugSellThreshold));
@@ -1682,6 +1736,21 @@ public class TaunCore implements ClientModInitializer {
         return sb.toString();
     }
 
+    /** Returns true if the item in a hotbar slot is a critical tool that must not be displaced during book drops. */
+    private static boolean isCriticalHotbarItem(net.minecraft.item.ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        String name = stack.getName().getString().replaceAll("§.", "").toLowerCase();
+        String itemId = net.minecraft.registry.Registries.ITEM.getId(stack.getItem()).toString().toLowerCase();
+        if (name.contains("vacuum"))                 return true; // pest vacuum
+        if (name.contains("squeaky"))                return true; // squeaky mousemat / squeaky toy
+        if (name.contains("mk.") || name.contains("mk ")) return true; // farming tools (Mk. I–VII)
+        if (name.contains("aspect of the void") || name.contains("aspect of the end")) return true; // AOTV/AOTE
+        if (name.contains("sprayonator"))            return true; // sprayonator
+        if (name.contains("abiphone"))               return true; // abiphone
+        if (itemId.equals("minecraft:fishing_rod"))  return true; // rod (rodswap)
+        return false;
+    }
+
     private static void performDropBooks(int threshold) throws InterruptedException {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.player == null) return;
@@ -1693,8 +1762,7 @@ public class TaunCore implements ClientModInitializer {
             var stack = mc.player.getInventory().getStack(i);
             if (stack.isEmpty()) continue;
             String name = getCleanItemText(stack);
-            boolean matches = matchesDropBook(name);
-            if (matches) { bookSlots.add(i); totalCount += stack.getCount(); }
+            if (matchesDropBook(name)) { bookSlots.add(i); totalCount += stack.getCount(); }
         }
 
         final int finalCount = totalCount;
@@ -1704,6 +1772,31 @@ public class TaunCore implements ClientModInitializer {
         }
 
         if (debugEnabled) mc.execute(() -> { if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[DropBooks] Found " + finalCount + " book(s), initiating flight + drop"), false); });
+
+        // Find a safe hotbar slot to temporarily park books in for dropping.
+        // Priority: empty slot first, then a non-critical item slot. Skip if all slots are critical tools.
+        // Books already in hotbar don't need a swap slot — they can be dropped in-place.
+        boolean allBooksAlreadyInHotbar = bookSlots.stream().allMatch(s -> s < 9);
+        int safeSwapSlot = -1; // 0-based hotbar index
+        if (!allBooksAlreadyInHotbar) {
+            // First pass: find an empty hotbar slot
+            for (int i = 0; i < 9; i++) {
+                if (mc.player.getInventory().getStack(i).isEmpty()) { safeSwapSlot = i; break; }
+            }
+            // Second pass: find a non-critical hotbar slot
+            if (safeSwapSlot == -1) {
+                for (int i = 0; i < 9; i++) {
+                    if (!isCriticalHotbarItem(mc.player.getInventory().getStack(i))) { safeSwapSlot = i; break; }
+                }
+            }
+            if (safeSwapSlot == -1) {
+                mc.execute(() -> { if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §c[DropBooks] No safe hotbar slot available — all 9 slots contain critical tools. Cannot drop books safely."), false); });
+                LOGGER.warn("[DropBooks] All hotbar slots are critical tools — aborting drop");
+                return;
+            }
+            if (debugEnabled) { final int ss = safeSwapSlot; mc.execute(() -> { if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[DropBooks] Using hotbar slot " + (ss + 1) + " as swap slot"), false); }); }
+        }
+        final int DROP_HOTBAR_SLOT = safeSwapSlot; // may be -1 if all books already in hotbar
 
         // Check if already flying
         java.util.concurrent.atomic.AtomicBoolean alreadyFlying = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -1715,56 +1808,90 @@ public class TaunCore implements ClientModInitializer {
         flyCheckLatch.await();
 
         if (!alreadyFlying.get()) {
-            // Double-tap space to initiate flight
             pressKey("space", "space");
             Thread.sleep(100);
             pressKey("space", "space");
             Thread.sleep(400);
         }
 
-        // Hold space for 1 second to gain altitude / stay airborne
         holdKey("space", "space");
         Thread.sleep(1000);
         unholdKey("space", "space");
         Thread.sleep(150);
 
-        // Open inventory so THROW packets are legitimate
-        pressKey("inventory", "inventory");
-        long invDeadline = System.currentTimeMillis() + 3000;
-        while (mc.currentScreen == null && System.currentTimeMillis() < invDeadline) Thread.sleep(50);
-        if (mc.currentScreen == null) {
-            LOGGER.warn("[DropBooks] Inventory did not open, aborting drop");
-            return;
-        }
-        Thread.sleep(150); // let slots populate
+        // Remember the current hotbar slot so we can restore it
+        java.util.concurrent.atomic.AtomicInteger originalHotbarSlot = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.CountDownLatch slotLatch = new java.util.concurrent.CountDownLatch(1);
+        mc.execute(() -> {
+            try { if (mc.player != null) originalHotbarSlot.set(mc.player.getInventory().getSelectedSlot()); }
+            finally { slotLatch.countDown(); }
+        });
+        slotLatch.await();
 
-        // Drop each matching book stack using THROW (button=1 = whole stack)
-        // PlayerScreenHandler slot mapping: hotbar 0-8 -> GUI slots 36-44, main inv 9-35 -> GUI slots 9-35
+        int droppedCount = 0;
         for (int invSlot : bookSlots) {
-            final int guiSlot = (invSlot < 9) ? (invSlot + 36) : invSlot;
-            java.util.concurrent.CountDownLatch dropLatch = new java.util.concurrent.CountDownLatch(1);
-            mc.execute(() -> {
-                try {
-                    if (mc.player != null && mc.currentScreen != null)
-                        mc.interactionManager.clickSlot(
-                            mc.player.currentScreenHandler.syncId,
-                            guiSlot, 1, // button=1 = drop whole stack
-                            net.minecraft.screen.slot.SlotActionType.THROW,
-                            mc.player
-                        );
-                } finally { dropLatch.countDown(); }
-            });
-            dropLatch.await();
-            Thread.sleep(guiClickDelayMs);
+            if (mc.player == null) break;
+            final boolean isHotbar = invSlot < 9;
+
+            if (isHotbar) {
+                // Already in hotbar — just select it and Ctrl+Q
+                pressKey(String.valueOf(invSlot + 1), String.valueOf(invSlot + 1));
+                Thread.sleep(80);
+            } else {
+                // Main inventory — need to swap to safe hotbar slot first
+                // Open inventory
+                pressKey("inventory", "inventory");
+                long invOpen = System.currentTimeMillis() + 3000;
+                while (mc.currentScreen == null && System.currentTimeMillis() < invOpen) Thread.sleep(50);
+                if (mc.currentScreen == null) { LOGGER.warn("[DropBooks] Inventory did not open"); break; }
+                Thread.sleep(120);
+
+                // SWAP action: click main-inv GUI slot with the hotbar number as button
+                // PlayerScreenHandler: main inv slots 9-35 map to GUI slots 9-35
+                final int guiSlot = invSlot; // main inv slot index == GUI slot index for slots 9-35
+                final int swapButton = DROP_HOTBAR_SLOT; // 0-based button = hotbar slot index
+                java.util.concurrent.CountDownLatch swapLatch = new java.util.concurrent.CountDownLatch(1);
+                mc.execute(() -> {
+                    try {
+                        if (mc.player != null && mc.currentScreen != null)
+                            mc.interactionManager.clickSlot(
+                                mc.player.currentScreenHandler.syncId,
+                                guiSlot, swapButton,
+                                net.minecraft.screen.slot.SlotActionType.SWAP,
+                                mc.player
+                            );
+                    } finally { swapLatch.countDown(); }
+                });
+                swapLatch.await();
+                Thread.sleep(120);
+
+                // Close inventory
+                mc.execute(() -> { if (mc.currentScreen != null) mc.player.closeHandledScreen(); });
+                long closeDl = System.currentTimeMillis() + 2000;
+                while (mc.currentScreen != null && System.currentTimeMillis() < closeDl) Thread.sleep(50);
+                Thread.sleep(80);
+
+                // Select the swap slot
+                pressKey(String.valueOf(DROP_HOTBAR_SLOT + 1), String.valueOf(DROP_HOTBAR_SLOT + 1));
+                Thread.sleep(80);
+            }
+
+            // Ctrl+Q to drop the whole stack
+            holdKey("ctrl", "ctrl");
+            Thread.sleep(50);
+            pressKey("drop", "drop");
+            Thread.sleep(100);
+            unholdKey("ctrl", "ctrl");
+            droppedCount++;
+            Thread.sleep(applyRandomDelay(400));
         }
 
-        // Close inventory
-        mc.execute(() -> { if (mc.currentScreen != null) mc.player.closeHandledScreen(); });
-        long closeDeadline = System.currentTimeMillis() + 2000;
-        while (mc.currentScreen != null && System.currentTimeMillis() < closeDeadline) Thread.sleep(50);
-        Thread.sleep(100);
+        // Restore original hotbar slot
+        pressKey(String.valueOf(originalHotbarSlot.get() + 1), String.valueOf(originalHotbarSlot.get() + 1));
+        Thread.sleep(80);
 
-        if (debugEnabled) mc.execute(() -> { if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[DropBooks] Dropped " + bookSlots.size() + " book stack(s)"), false); });
+        final int fd = droppedCount;
+        if (debugEnabled) mc.execute(() -> { if (mc.player != null) mc.player.sendMessage(Text.literal("§c§lTaun+++ >> §7[DropBooks] Dropped " + fd + " book stack(s)"), false); });
     }
 
     private static void performWardrobeSlotSwap(int slotNumber, String label) throws InterruptedException {
@@ -2611,10 +2738,16 @@ public class TaunCore implements ClientModInitializer {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
         taunahiRewarpEnabled = !taunahiRewarpEnabled;
-        // Coord triggers conflict with Taunahi intermediate rewarp — disable them when this mode is on
-        if (taunahiRewarpEnabled && coordTriggersEnabled) {
-            coordTriggersEnabled = false;
-            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Coordinate Triggers: §cDISABLED §7(incompatible with Taunahi Rewarp)"), false);
+        if (taunahiRewarpEnabled) {
+            // Turning on — disable coord triggers (they conflict)
+            if (coordTriggersEnabled) {
+                coordTriggersEnabled = false;
+                client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Coordinate Triggers: §cDISABLED §7(incompatible with Taunahi Rewarp)"), false);
+            }
+        } else {
+            // Turning off — re-enable coord triggers
+            coordTriggersEnabled = true;
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Coordinate Triggers: §aENABLED"), false);
         }
         saveSettings();
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Taunahi Intermediate Rewarp: " + (taunahiRewarpEnabled ? "§aENABLED" : "§cDISABLED")), false);
@@ -2670,6 +2803,16 @@ public class TaunCore implements ClientModInitializer {
         sellVinylsEnabled = !sellVinylsEnabled;
         saveSettings();
         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Vinyl sell: " + (sellVinylsEnabled ? "§aENABLED §7(all SkyBlock vinyls will be sold via /boostercookie)" : "§cDISABLED")), false);
+    }
+
+    public static void setVinylSellThreshold(int n) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        if (n < 1 || n > 20) { client.player.sendMessage(Text.literal("§c§lTaun+++ >> §cInvalid threshold. Must be 1-20."), false); return; }
+        vinylSellThreshold = n;
+        if (!sellVinylsEnabled) { sellVinylsEnabled = true; }
+        saveSettings();
+        client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Vinyl sell threshold set to §e" + n + " §7vinyl(s). Vinyl sell: §aENABLED"), false);
     }
 
     public static void toggleDropBooks() {
@@ -2752,6 +2895,7 @@ public class TaunCore implements ClientModInitializer {
     public static boolean isGeorgeSlugSellEnabled() { return georgeSlugSellEnabled; }
     public static boolean isBoosterCookieEnabled()  { return boosterCookieEnabled; }
     public static boolean isSellVinylsEnabled()     { return sellVinylsEnabled; }
+    public static int  getVinylSellThreshold()       { return vinylSellThreshold; }
     public static boolean isDropBooksEnabled()      { return dropBooksEnabled; }
     public static long getRotateSpeedMs()           { return rotateSpeedMs; }
     public static int  getSlugSellThreshold()       { return slugSellThreshold; }
@@ -2767,6 +2911,7 @@ public class TaunCore implements ClientModInitializer {
     public static void setRestBreakTimeSilent(int v)            { restBreakTime = Math.min(60, Math.max(1, v)); saveSettings(); }
     public static void setSlugSellThresholdSilent(int v)        { slugSellThreshold = Math.min(10, Math.max(1, v)); saveSettings(); }
     public static void setExtraSellThresholdSilent(int v)       { extraSellThreshold = Math.min(10, Math.max(1, v)); saveSettings(); }
+    public static void setVinylSellThresholdSilent(int v)       { vinylSellThreshold = Math.min(20, Math.max(1, v)); saveSettings(); }
     public static void setDropBooksThresholdSilent(int v)       { dropBooksThreshold = Math.min(10, Math.max(1, v)); saveSettings(); }
     public static void setWardrobeFfSlotSilent(int v)           { wardrobeFfSlot = Math.min(9, Math.max(0, v)); saveSettings(); }
     public static void setWardrobeBpcSlotSilent(int v)          { wardrobeBpcSlot = Math.min(9, Math.max(0, v)); saveSettings(); }
@@ -2782,7 +2927,11 @@ public class TaunCore implements ClientModInitializer {
     public static void setZorroEnabled(boolean v)          { zorroEnabled = v; saveSettings(); }
     public static void setTaunahiRewarpEnabled(boolean v)  {
         taunahiRewarpEnabled = v;
-        if (v && coordTriggersEnabled) coordTriggersEnabled = false;
+        if (v) {
+            if (coordTriggersEnabled) coordTriggersEnabled = false; // disable coords when rewarp turns on
+        } else {
+            coordTriggersEnabled = true; // re-enable coords when rewarp turns off
+        }
         saveSettings();
         // Rewrite triggers.txt so the [Finished] visitor trigger is added/removed immediately
         writePestTriggers(rodswapEnabled ? "rodswap" : wardrobeSwapEnabled ? "wdswap" : "none");
@@ -2816,7 +2965,7 @@ public class TaunCore implements ClientModInitializer {
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Etherwarp: " + (etherwarpEnabled ? "§aENABLED" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Equipment Swap: " + (eqSwapEnabled ? "§aENABLED" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Taunahi Rewarp: " + (taunahiRewarpEnabled ? "§aENABLED §7(coord triggers disabled)" : "§cDISABLED")), false);
-            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra Sell: " + (boosterCookieEnabled ? "§aENABLED §7(threshold: §e" + extraSellThreshold + "§7, vinyls: " + (sellVinylsEnabled ? "§aON§7" : "§cOFF§7") + ")" : "§cDISABLED")), false);
+            client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Extra Sell: " + (boosterCookieEnabled ? "§aENABLED §7(threshold: §e" + extraSellThreshold + "§7, vinyls: " + (sellVinylsEnabled ? "§aON§7 (min: §e" + vinylSellThreshold + "§7)" : "§cOFF§7") + ")" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7George Slug/Rat Sell: " + (georgeSlugSellEnabled ? "§aENABLED §7(threshold: §e" + slugSellThreshold + "§7)" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Drop Books: " + (dropBooksEnabled ? "§aENABLED §7(threshold: §e" + dropBooksThreshold + "§7)" : "§cDISABLED")), false);
             client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Rotate Speed: §e" + rotateSpeedMs + "ms"), false);
@@ -2917,14 +3066,19 @@ public class TaunCore implements ClientModInitializer {
             if (sec >= 170 && sec <= 180 && (System.currentTimeMillis() - lastEqSwapFireTime) > EQ_SWAP_COOLDOWN_MS) {
                 lastEqSwapFireTime = System.currentTimeMillis();
                 if (isFarming) for (PestCdTrigger t : eqPestCdWdTriggers) firePestCdTrigger(t);
-                else { eqSwapPending = true; if (debugEnabled) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Queuing WD EQSwap..."), false); }
+                else { wdSwapPending = true; if (debugEnabled) client.player.sendMessage(Text.literal("§c§lTaun+++ >> §7Queuing WD EQSwap..."), false); }
             }
         }
         long now = System.currentTimeMillis();
         if (ready && !lastPestCooldownReady && !inGrace && (now - lastPestReadyTime) > PEST_READY_COOLDOWN) {
             lastPestReadyTime = now;
-            for (PestCdTrigger t : pestCdTriggers) firePestCdTrigger(t);
-            if (pestCdTriggers.isEmpty() && rodswapEnabled && !eqSwapEnabled) triggerRodSwap();
+            if (isFarming) {
+                for (PestCdTrigger t : pestCdTriggers) firePestCdTrigger(t);
+                if (pestCdTriggers.isEmpty() && rodswapEnabled && !eqSwapEnabled) triggerRodSwap();
+            } else if (!pestCdTriggers.isEmpty()) {
+                pestCdPending = true;
+                if (debugEnabled) MinecraftClient.getInstance().player.sendMessage(Text.literal("§c§lTaun+++ >> §7Queuing PestCD swap..."), false);
+            }
         }
         lastPestCooldownReady = ready;
     }
@@ -3661,14 +3815,19 @@ public class TaunCore implements ClientModInitializer {
                         coordTriggersEnabled = false;
                         setupData.put("rewarp", "yes");
                         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Taunahi Rewarp: §aENABLED §7(coordinate triggers disabled)"), false);
+                        saveSettings();
+                        // rewarp+non-wdswap: taunahi handles rewarping, no coord steps needed
+                        if (!isWdswap) { finishSetup(); return true; }
+                        // rewarp+wdswap: still need wardrobe slots
+                        setupStep++; showSetupStep();
                     } else {
+                        taunahiRewarpEnabled = false;
                         setupData.put("rewarp", "no");
                         client.player.sendMessage(Text.literal("§c§lTaun+++ >> §a✓ Taunahi Rewarp: §cDISABLED §7(coordinate triggers will be used)"), false);
+                        saveSettings();
+                        // no-rewarp: always continue to coord steps (or wardrobe slots for wdswap)
+                        setupStep++; showSetupStep();
                     }
-                    saveSettings();
-                    // rewarp+non-wdswap: no more steps needed, finish immediately
-                    if (taunahiRewarpEnabled && !isWdswap) { finishSetup(); return true; }
-                    setupStep++; showSetupStep();
                 } else client.player.sendMessage(Text.literal("§c§lTaun+++ >> §c✗ Type yes or no"), false);
             }
             // ── Step 6: FF slot (wdswap only — rewarp+non-wdswap already finished at step 5) ──────────
@@ -3872,6 +4031,7 @@ public class TaunCore implements ClientModInitializer {
                     if (dropBooksEnabled) t.append("  DROPBOOKS: " + dropBooksThreshold + "\n");
                     t.append("  COMMAND: /warp garden after 100ms\n  HOLD: shift for 350ms\n");
                     if (!rosedragEnabled) t.append("  RODSWAP\n");
+                    t.append("  PRESS: @FARMING_TOOL_SLOT after 50ms\n");
                     t.append("  COMMAND: .ez-startscript netherwart:1 after 100ms\n");
                     appendVisitorTriggers(t);
                     appendServerShutdownTrigger(t);
@@ -3885,7 +4045,9 @@ public class TaunCore implements ClientModInitializer {
                     if (etherwarpEnabled) t.append(buildEtherwarpLine());
                     t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n");
                     if (dropBooksEnabled) t.append("  DROPBOOKS: " + dropBooksThreshold + "\n");
-                    t.append("  COMMAND: /warp garden after 100ms\n  HOLD: shift for 350ms\n  COMMAND: .ez-startscript netherwart:1\n");
+                    t.append("  COMMAND: /warp garden after 100ms\n  HOLD: shift for 350ms\n");
+                    t.append("  PRESS: @FARMING_TOOL_SLOT after 50ms\n");
+                    t.append("  COMMAND: .ez-startscript netherwart:1\n");
                     appendVisitorTriggers(t);
                     appendServerShutdownTrigger(t);
                 }
@@ -3897,7 +4059,9 @@ public class TaunCore implements ClientModInitializer {
                     if (etherwarpEnabled) t.append(buildEtherwarpLine());
                     t.append("  COMMAND: .ez-startscript misc:pestCleaner\n\nTRIGGER: \"Pest Cleaner script stopped. [Finished]\"\n");
                     if (dropBooksEnabled) t.append("  DROPBOOKS: " + dropBooksThreshold + "\n");
-                    t.append("  COMMAND: /warp garden after 100ms\n  HOLD: shift for 350ms\n  COMMAND: .ez-startscript netherwart:1\n");
+                    t.append("  COMMAND: /warp garden after 100ms\n  HOLD: shift for 350ms\n");
+                    t.append("  PRESS: @FARMING_TOOL_SLOT after 50ms\n");
+                    t.append("  COMMAND: .ez-startscript netherwart:1\n");
                     appendVisitorTriggers(t);
                     appendServerShutdownTrigger(t);
                 }
@@ -4104,6 +4268,7 @@ public class TaunCore implements ClientModInitializer {
         client.player.sendMessage(Text.literal("§e/pest georgesell §7— toggle George slug/rat auto-sell on/off  §8|  §e/pest georgesell <1-10> §7— set slug threshold"), false);
         client.player.sendMessage(Text.literal("§e/pest extrasell §e<1-10> §7— toggle selling extra items via booster cookie menu"), false);
         client.player.sendMessage(Text.literal("§e/pest extrasell vinyls §7— toggle selling all SkyBlock vinyls (off by default)"), false);
+        client.player.sendMessage(Text.literal("§e/pest extrasell vinyl <1-20> §7— set min vinyls before selling (default: 1)"), false);
         client.player.sendMessage(Text.literal("§e/pest dropbooks §e<1-10> §7— toggle dropping Sunder VI / Pesterminator I books when found"), false);
         client.player.sendMessage(Text.literal("§e/pest random §70-250ms — randomize all delays in triggers.txt by \u00b1<ms>"), false);
         client.player.sendMessage(Text.literal("§e/pest guidelay §7— change the equipping delay §c(useful for high ping users)"), false);
